@@ -234,18 +234,19 @@ def _classify_move(
     if best_cp is None or post_cp is None:
         return "good"
 
-    # The player who moved: if opponent_turn is True, it was the other side's turn now
-    # So the player who just moved is not opponent_turn
-    # We compare from the perspective of the player who moved
-    # Since scores are from white's perspective:
-    # If white just moved (opponent_turn == True means black to move), loss = best_cp - post_cp
-    # If black just moved (opponent_turn == False means white to move), loss = post_cp - best_cp
+    # board.turn after push = whose turn it is NOW (the opponent of who just moved)
+    # chess.WHITE = True, chess.BLACK = False
+    # So opponent_turn=True means WHITE to move = BLACK just moved
+    # And opponent_turn=False means BLACK to move = WHITE just moved
+    # Scores are always from white's perspective.
     if opponent_turn:
-        # Black to move = white just moved
-        loss = best_cp - post_cp
-    else:
         # White to move = black just moved
+        # Bad black move makes eval more positive (better for white)
         loss = post_cp - best_cp
+    else:
+        # Black to move = white just moved
+        # Bad white move makes eval more negative (worse for white)
+        loss = best_cp - post_cp
 
     if loss <= 10:
         return "best"
