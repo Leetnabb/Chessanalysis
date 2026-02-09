@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .database import ChessDatabase
+from .engine import StockfishAnalyzer, format_score, format_eval_bar
 from .parser import parse_pgn_file
 
 
@@ -66,6 +67,21 @@ def main(argv: list[str] | None = None):
     # ── summary ───────────────────────────────────────────────────────
     subparsers.add_parser("summary", help="Show database summary")
 
+    # ── analyze ──────────────────────────────────────────────────────
+    p_analyze = subparsers.add_parser("analyze", help="Analyze a game with Stockfish")
+    p_analyze.add_argument("id", type=int, help="Game ID to analyze")
+    p_analyze.add_argument("--depth", type=int, default=18, help="Search depth (default: 18)")
+    p_analyze.add_argument("--moves", help="Move range to analyze, e.g. 1-20 (full move numbers)")
+    p_analyze.add_argument("--multipv", type=int, default=1, help="Number of lines to show per position")
+    p_analyze.add_argument("--stockfish", help="Path to Stockfish binary")
+
+    # ── eval ─────────────────────────────────────────────────────────
+    p_eval = subparsers.add_parser("eval", help="Evaluate a FEN position with Stockfish")
+    p_eval.add_argument("fen", help="FEN string to evaluate")
+    p_eval.add_argument("--depth", type=int, default=20, help="Search depth (default: 20)")
+    p_eval.add_argument("--multipv", type=int, default=3, help="Number of lines (default: 3)")
+    p_eval.add_argument("--stockfish", help="Path to Stockfish binary")
+
     args = parser.parse_args(argv)
 
     with ChessDatabase(args.db) as db:
@@ -87,6 +103,10 @@ def main(argv: list[str] | None = None):
             cmd_delete(db, args)
         elif args.command == "summary":
             cmd_summary(db)
+        elif args.command == "analyze":
+            cmd_analyze(db, args)
+        elif args.command == "eval":
+            cmd_eval(args)
 
 
 # ── Command implementations ──────────────────────────────────────────
@@ -261,6 +281,116 @@ def cmd_summary(db: ChessDatabase):
             for o in openings:
                 name = o["opening"] or o["eco"]
                 print(f"  {name}: {o['games']} games")
+
+
+def cmd_analyze(db: ChessDatabase, args):
+    game = db.get_game(args.id)
+    if not game:
+        print(f"Game #{args.id} not found.")
+        return
+
+    print(f"Analyzing game #{game['id']}: {game['white']} vs {game['black']}")
+    print(f"  Opening: {game['opening'] or game['eco'] or '?'}")
+    print(f"  Result:  {game['result']}")
+    print(f"  Depth:   {args.depth}")
+    print()
+
+    move_range = None
+    if args.moves:
+        parts = args.moves.split("-")
+        start_full = int(parts[0])
+        end_full = int(parts[1]) if len(parts) > 1 else start_full
+        # Convert full move numbers to ply
+        start_ply = (start_full - 1) * 2 + 1
+        end_ply = end_full * 2
+        move_range = (start_ply, end_ply)
+
+    try:
+        with StockfishAnalyzer(stockfish_path=args.stockfish) as analyzer:
+            results = analyzer.analyze_game(
+                game["moves"], depth=args.depth, move_range=move_range
+            )
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return
+
+    if not results:
+        print("No moves to analyze.")
+        return
+
+    # Print move-by-move analysis
+    _CLASSIFICATION_SYMBOLS = {
+        "best": "!!",
+        "excellent": "!",
+        "good": "",
+        "inaccuracy": "?!",
+        "mistake": "?",
+        "blunder": "??",
+    }
+
+    counts = {"white": {}, "black": {}}
+    for r in results:
+        cls = r["classification"]
+        side = r["side"]
+        counts[side][cls] = counts[side].get(cls, 0) + 1
+
+    print(f"{'Move':<8} {'Played':<12} {'Eval':>8}  {'Bar':<22} {'Best':<12} {'Class'}")
+    print("-" * 80)
+
+    for r in results:
+        score_str = format_score(r["score_cp"], r["score_mate"])
+        bar = format_eval_bar(r["score_cp"], r["score_mate"])
+        sym = _CLASSIFICATION_SYMBOLS.get(r["classification"], "")
+        move_label = f"{r['move_number']}." if r["side"] == "white" else f"{r['move_number']}..."
+
+        best_str = ""
+        if r["classification"] not in ("best", "excellent", "good"):
+            best_str = r["best_move_san"]
+
+        played = f"{r['move_san']}{sym}"
+        print(f"{move_label:<8} {played:<12} {score_str:>8}  {bar}  {best_str:<12} {r['classification']}")
+
+    # Summary
+    print()
+    print("Summary:")
+    for side in ("white", "black"):
+        name = game["white"] if side == "white" else game["black"]
+        side_counts = counts[side]
+        total = sum(side_counts.values())
+        if total == 0:
+            continue
+        parts = []
+        for cls in ("best", "excellent", "good", "inaccuracy", "mistake", "blunder"):
+            c = side_counts.get(cls, 0)
+            if c > 0:
+                parts.append(f"{c} {cls}")
+        accuracy = (
+            side_counts.get("best", 0) + side_counts.get("excellent", 0) + side_counts.get("good", 0)
+        ) / total * 100
+        print(f"  {name} ({side}): accuracy {accuracy:.0f}% - {', '.join(parts)}")
+
+
+def cmd_eval(args):
+    print(f"Evaluating position: {args.fen}")
+    print(f"  Depth: {args.depth}  Lines: {args.multipv}")
+    print()
+
+    try:
+        with StockfishAnalyzer(stockfish_path=args.stockfish) as analyzer:
+            results = analyzer.analyze_fen(args.fen, depth=args.depth, multipv=args.multipv)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return
+
+    for i, r in enumerate(results, 1):
+        score_str = format_score(r["score_cp"], r["score_mate"])
+        bar = format_eval_bar(r["score_cp"], r["score_mate"])
+        pv_str = " ".join(r["pv_san"][:10])
+        if len(r["pv_san"]) > 10:
+            pv_str += " ..."
+        print(f"Line {i}: {score_str}  {bar}")
+        print(f"  PV: {pv_str}")
+        print()
 
 
 if __name__ == "__main__":
