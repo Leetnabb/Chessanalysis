@@ -98,7 +98,17 @@ def main(argv: list[str] | None = None):
     p_blunders.add_argument("player", help="Player name")
     p_blunders.add_argument("--limit", type=int, default=20, help="Number of blunders (default: 20)")
 
+    # ── web ─────────────────────────────────────────────────────────
+    p_web = subparsers.add_parser("web", help="Start the web interface")
+    p_web.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
+    p_web.add_argument("--port", type=int, default=5000, help="Port (default: 5000)")
+
     args = parser.parse_args(argv)
+
+    if args.command == "web":
+        from .web.app import run_server
+        run_server(db_path=args.db, host=args.host, port=args.port)
+        return
 
     with ChessDatabase(args.db) as db:
         if args.command == "import":

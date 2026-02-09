@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Games - Chess Analysis{% endblock %}
+
+{% block content %}
+<h1>Games</h1>
+
+<div class="card">
+    <form class="search-bar" method="get" action="{{ url_for('games') }}">
+        <input type="text" name="player" value="{{ player }}" placeholder="Player name">
+        <input type="text" name="eco" value="{{ eco }}" placeholder="ECO code">
+        <select name="result">
+            <option value="">Any result</option>
+            <option value="1-0" {{ 'selected' if result == '1-0' }}>1-0</option>
+            <option value="0-1" {{ 'selected' if result == '0-1' }}>0-1</option>
+            <option value="1/2-1/2" {{ 'selected' if result == '1/2-1/2' }}>1/2-1/2</option>
+        </select>
+        <button type="submit" class="btn">Search</button>
+    </form>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Date</th>
+                <th>White</th>
+                <th>Black</th>
+                <th>Result</th>
+                <th>ECO</th>
+                <th>Opening</th>
+                <th>Analyzed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for g in games %}
+            <tr>
+                <td><a href="{{ url_for('game_detail', game_id=g.id) }}">#{{ g.id }}</a></td>
+                <td>{{ g.date }}</td>
+                <td>{{ g.white }}{% if g.white_elo %} ({{ g.white_elo }}){% endif %}</td>
+                <td>{{ g.black }}{% if g.black_elo %} ({{ g.black_elo }}){% endif %}</td>
+                <td>{{ g.result }}</td>
+                <td>{{ g.eco }}</td>
+                <td>{{ (g.opening or '')[:25] }}</td>
+                <td>
+                    {% if g.analyzed %}
+                        <span style="color:var(--green)">Yes</span>
+                    {% else %}
+                        <span style="color:var(--text-dim)">No</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not games %}
+    <p style="text-align:center; color:var(--text-dim); padding:20px;">No games found.</p>
+    {% endif %}
+
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="{{ url_for('games', player=player, eco=eco, result=result, page=page-1) }}" class="btn btn-sm btn-secondary">&larr; Previous</a>
+        {% endif %}
+        <span class="btn btn-sm" style="background:var(--border); cursor:default;">Page {{ page }}</span>
+        {% if games|length == 30 %}
+        <a href="{{ url_for('games', player=player, eco=eco, result=result, page=page+1) }}" class="btn btn-sm btn-secondary">Next &rarr;</a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

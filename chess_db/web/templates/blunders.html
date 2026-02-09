@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Blunders: {{ player }} - Chess Analysis{% endblock %}
+
+{% block content %}
+<h1>Worst Moves: {{ player }}</h1>
+
+<p style="color:var(--text-dim); margin-bottom:20px;">
+    Review your blunders and mistakes to avoid repeating them.
+    <a href="{{ url_for('report', player=player) }}">Back to report</a>
+</p>
+
+{% if not blunders %}
+<div class="card">
+    <p style="color:var(--text-dim);">No blunders or mistakes found.</p>
+    <p style="margin-top:10px;">
+        <a href="{{ url_for('index') }}" class="btn">Run batch analysis</a> to find mistakes in your games.
+    </p>
+</div>
+{% else %}
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Game</th>
+                <th>Move</th>
+                <th>You Played</th>
+                <th>Best Move</th>
+                <th>Eval After</th>
+                <th>Best Eval</th>
+                <th>Type</th>
+                <th>Opening</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in blunders %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>
+                    <a href="{{ url_for('game_detail', game_id=b.game_id) }}">
+                        #{{ b.game_id }}
+                    </a>
+                </td>
+                <td style="color:var(--text-dim);">
+                    {{ b.move_number }}{{ '.' if b.side == 'white' else '...' }}
+                </td>
+                <td><strong>{{ b.move_san }}</strong></td>
+                <td style="color:var(--green);">{{ b.best_move_san }}</td>
+                <td>{{ b.score_str }}</td>
+                <td>{{ b.best_score_str }}</td>
+                <td>
+                    {% if b.classification == 'blunder' %}
+                        <span class="badge badge-blunder">Blunder</span>
+                    {% elif b.classification == 'mistake' %}
+                        <span class="badge badge-mistake">Mistake</span>
+                    {% endif %}
+                </td>
+                <td style="color:var(--text-dim); font-size:0.85em;">{{ (b.opening or b.eco or '?')[:20] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endif %}
+{% endblock %}

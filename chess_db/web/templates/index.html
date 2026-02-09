@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Chess Analysis{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="grid grid-4">
+    <div class="card stat-card">
+        <div class="value">{{ total }}</div>
+        <div class="label">Total Games</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">{{ analyzed }}</div>
+        <div class="label">Analyzed</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">{{ total - analyzed }}</div>
+        <div class="label">Pending</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">{{ "%.0f"|format(analyzed / total * 100) if total > 0 else 0 }}%</div>
+        <div class="label">Coverage</div>
+    </div>
+</div>
+
+<!-- Batch analyze form -->
+<div class="card">
+    <h2>Analyze Games</h2>
+    <form action="{{ url_for('batch_analyze') }}" method="post" style="display:flex; gap:10px; flex-wrap:wrap; align-items:end;">
+        <div>
+            <label style="display:block; font-size:0.85em; color:var(--text-dim); margin-bottom:4px;">Player</label>
+            <input type="text" name="player" placeholder="e.g. Leetnabb">
+        </div>
+        <div>
+            <label style="display:block; font-size:0.85em; color:var(--text-dim); margin-bottom:4px;">Games</label>
+            <input type="number" name="limit" value="20" min="1" max="500" style="width:80px;">
+        </div>
+        <div>
+            <label style="display:block; font-size:0.85em; color:var(--text-dim); margin-bottom:4px;">Depth</label>
+            <input type="number" name="depth" value="14" min="6" max="24" style="width:80px;">
+        </div>
+        <button type="submit" class="btn">Start Batch Analysis</button>
+    </form>
+</div>
+
+<div class="grid grid-2">
+    <!-- Top Players -->
+    <div class="card">
+        <h2>Top Players</h2>
+        <table>
+            <thead>
+                <tr><th>Player</th><th>Games</th><th>Wins</th><th>Peak Elo</th><th></th></tr>
+            </thead>
+            <tbody>
+                {% for p in top_players %}
+                <tr>
+                    <td><a href="{{ url_for('report', player=p.name) }}">{{ p.name }}</a></td>
+                    <td>{{ p.games }}</td>
+                    <td>{{ p.wins }}</td>
+                    <td>{{ p.peak_elo or '-' }}</td>
+                    <td><a href="{{ url_for('blunders', player=p.name) }}" class="btn btn-sm btn-secondary">Blunders</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Top Openings -->
+    <div class="card">
+        <h2>Top Openings</h2>
+        <table>
+            <thead>
+                <tr><th>ECO</th><th>Opening</th><th>Games</th><th>W%</th></tr>
+            </thead>
+            <tbody>
+                {% for o in top_openings %}
+                <tr>
+                    <td>{{ o.eco }}</td>
+                    <td><a href="{{ url_for('games', eco=o.eco) }}">{{ (o.opening or '-')[:30] }}</a></td>
+                    <td>{{ o.games }}</td>
+                    <td>{{ "%.0f"|format(o.white_wins / o.games * 100) if o.games > 0 else '-' }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

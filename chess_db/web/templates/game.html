@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Game #{{ game.id }} - Chess Analysis{% endblock %}
+
+{% block content %}
+<h1>Game #{{ game.id }}: {{ game.white }} vs {{ game.black }}</h1>
+
+<div class="card" style="display:flex; gap:30px; flex-wrap:wrap; align-items:center;">
+    <div>
+        <strong>{{ game.white }}</strong>{% if game.white_elo %} ({{ game.white_elo }}){% endif %}
+        vs
+        <strong>{{ game.black }}</strong>{% if game.black_elo %} ({{ game.black_elo }}){% endif %}
+    </div>
+    <div style="color:var(--text-dim)">
+        {{ game.date }} | {{ game.eco }} {{ game.opening or '' }} | {{ game.result }}
+    </div>
+    {% if not analysis %}
+    <form action="{{ url_for('analyze_game', game_id=game.id) }}" method="post" style="display:flex;gap:8px;align-items:center;">
+        <label style="font-size:0.85em; color:var(--text-dim);">Depth:</label>
+        <input type="number" name="depth" value="14" min="6" max="24" style="width:60px;">
+        <button type="submit" class="btn btn-sm">Analyze with Stockfish</button>
+    </form>
+    {% endif %}
+</div>
+
+{% if analysis %}
+<!-- Eval bar -->
+<div class="eval-bar-container" style="margin-bottom:10px;">
+    <div class="eval-bar-fill" id="eval-bar-fill" style="width:50%;"></div>
+    <div class="eval-bar-label" id="eval-bar-label">0.00</div>
+</div>
+
+<!-- Eval chart -->
+<div class="eval-chart" id="eval-chart" style="position:relative; cursor:pointer;"
+     onclick="handleChartClick(event)">
+    <canvas id="eval-canvas"></canvas>
+    <div id="chart-cursor" style="position:absolute; top:0; bottom:0; width:2px; background:var(--accent); pointer-events:none; left:0;"></div>
+</div>
+
+<!-- Accuracy summary -->
+<div class="grid grid-2" style="margin-bottom:10px;">
+    <div class="card stat-card" style="padding:12px;">
+        <div class="value" style="font-size:1.4em;">{{ "%.0f"|format(analysis.white_accuracy) if analysis.white_accuracy is not none else '?' }}%</div>
+        <div class="label">{{ game.white }} (White)</div>
+        <div style="font-size:0.8em; color:var(--text-dim); margin-top:4px;">
+            {% if analysis.white_blunders > 0 %}<span style="color:var(--red)">{{ analysis.white_blunders }} blunders</span> {% endif %}
+            {% if analysis.white_mistakes > 0 %}<span style="color:var(--yellow)">{{ analysis.white_mistakes }} mistakes</span> {% endif %}
+            {% if analysis.white_inaccuracies > 0 %}<span>{{ analysis.white_inaccuracies }} inaccuracies</span>{% endif %}
+        </div>
+    </div>
+    <div class="card stat-card" style="padding:12px;">
+        <div class="value" style="font-size:1.4em;">{{ "%.0f"|format(analysis.black_accuracy) if analysis.black_accuracy is not none else '?' }}%</div>
+        <div class="label">{{ game.black }} (Black)</div>
+        <div style="font-size:0.8em; color:var(--text-dim); margin-top:4px;">
+            {% if analysis.black_blunders > 0 %}<span style="color:var(--red)">{{ analysis.black_blunders }} blunders</span> {% endif %}
+            {% if analysis.black_mistakes > 0 %}<span style="color:var(--yellow)">{{ analysis.black_mistakes }} mistakes</span> {% endif %}
+            {% if analysis.black_inaccuracies > 0 %}<span>{{ analysis.black_inaccuracies }} inaccuracies</span>{% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="game-layout">
+    <!-- Board -->
+    <div>
+        <div id="board"></div>
+        <div class="board-controls">
+            <button class="btn btn-sm btn-secondary" id="btn-start">&laquo;</button>
+            <button class="btn btn-sm btn-secondary" id="btn-prev">&lsaquo;</button>
+            <span id="current-eval" style="min-width:60px; text-align:center; font-weight:700; font-size:1.1em;">0.00</span>
+            <button class="btn btn-sm btn-secondary" id="btn-next">&rsaquo;</button>
+            <button class="btn btn-sm btn-secondary" id="btn-end">&raquo;</button>
+        </div>
+    </div>
+
+    <!-- Move list -->
+    <div class="card move-list">
+        <table>
+            <thead>
+                <tr><th>#</th><th>White</th><th>Eval</th><th>Black</th><th>Eval</th></tr>
+            </thead>
+            <tbody>
+                {% if moves %}
+                {% set ns = namespace(i=0) %}
+                {% for move_num in range(1, (moves|length + 2) // 2 + 1) %}
+                <tr>
+                    <td style="color:var(--text-dim)">{{ move_num }}.</td>
+                    {% if ns.i < moves|length %}
+                        {% set m = moves[ns.i] %}
+                        <td class="move-cell" data-ply="{{ m.ply }}">
+                            {{ m.san }}
+                            {% if m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
+                            {% elif m.classification == 'mistake' %}<span class="badge badge-mistake">?</span>
+                            {% elif m.classification == 'inaccuracy' %}<span class="badge badge-inaccuracy">?!</span>
+                            {% elif m.classification == 'best' %}<span class="badge badge-best">!!</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size:0.8em; color:var(--text-dim);">{{ m.scoreStr }}</td>
+                        {% set ns.i = ns.i + 1 %}
+                    {% else %}
+                        <td></td><td></td>
+                    {% endif %}
+                    {% if ns.i < moves|length %}
+                        {% set m = moves[ns.i] %}
+                        <td class="move-cell" data-ply="{{ m.ply }}">
+                            {{ m.san }}
+                            {% if m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
+                            {% elif m.classification == 'mistake' %}<span class="badge badge-mistake">?</span>
+                            {% elif m.classification == 'inaccuracy' %}<span class="badge badge-inaccuracy">?!</span>
+                            {% elif m.classification == 'best' %}<span class="badge badge-best">!!</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size:0.8em; color:var(--text-dim);">{{ m.scoreStr }}</td>
+                        {% set ns.i = ns.i + 1 %}
+                    {% else %}
+                        <td></td><td></td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+                {% else %}
+                <tr><td colspan="5" style="text-align:center; color:var(--text-dim); padding:20px;">
+                    Not analyzed yet. Click "Analyze with Stockfish" above.
+                </td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/board.js') }}"></script>
+<script>
+    const moveData = {{ moves | tojson }};
+    const nav = new GameNavigator(document.getElementById('board'), moveData);
+
+    {% if moves %}
+    drawEvalChart('eval-canvas', moveData);
+
+    function handleChartClick(e) {
+        const chart = document.getElementById('eval-chart');
+        const rect = chart.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const pct = x / rect.width;
+        const ply = Math.round(pct * moveData.length);
+        nav.goto(ply);
+    }
+
+    window.addEventListener('resize', () => drawEvalChart('eval-canvas', moveData));
+    {% endif %}
+</script>
+{% endblock %}

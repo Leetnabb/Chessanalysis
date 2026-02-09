@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Report: {{ player }} - Chess Analysis{% endblock %}
+
+{% block content %}
+<h1>Learning Report: {{ player }}</h1>
+
+{% if not report %}
+<div class="card">
+    <p style="color:var(--text-dim);">No analyzed games found for "{{ player }}".</p>
+    <p style="margin-top:10px;">
+        <a href="{{ url_for('index') }}" class="btn">Go to Dashboard</a> to run batch analysis first.
+    </p>
+</div>
+{% else %}
+
+<!-- Stats overview -->
+<div class="grid grid-4">
+    <div class="card stat-card">
+        <div class="value">{{ stats.games }}</div>
+        <div class="label">Total Games</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">{{ report.analyzed_games }}</div>
+        <div class="label">Analyzed</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">{{ report.avg_accuracy or '?' }}%</div>
+        <div class="label">Avg Accuracy</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value">{{ stats.win_rate or 0 }}%</div>
+        <div class="label">Win Rate</div>
+    </div>
+</div>
+
+<!-- Error totals -->
+<div class="grid grid-3">
+    <div class="card stat-card">
+        <div class="value" style="color:var(--red)">{{ report.total_blunders }}</div>
+        <div class="label">Blunders</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value" style="color:var(--yellow)">{{ report.total_mistakes }}</div>
+        <div class="label">Mistakes</div>
+    </div>
+    <div class="card stat-card">
+        <div class="value" style="color:var(--text-dim)">{{ report.total_inaccuracies }}</div>
+        <div class="label">Inaccuracies</div>
+    </div>
+</div>
+
+<!-- Phase analysis -->
+<div class="card">
+    <h2>Errors by Game Phase</h2>
+    <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:15px;">Where in the game do you make the most mistakes?</p>
+    <table>
+        <thead>
+            <tr><th>Phase</th><th>Moves</th><th>Blunders</th><th>Mistakes</th><th>Inaccuracies</th><th>Error Rate</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for phase_name in ['opening', 'middlegame', 'endgame'] %}
+            {% set p = report.phase_errors[phase_name] %}
+            {% if p.total > 0 %}
+            {% set errors = p.blunder + p.mistake + p.inaccuracy %}
+            {% set good = p.total - errors %}
+            {% set err_pct = (errors / p.total * 100)|round(1) %}
+            <tr>
+                <td><strong>{{ phase_name|capitalize }}</strong></td>
+                <td>{{ p.total }}</td>
+                <td>{% if p.blunder > 0 %}<span style="color:var(--red)">{{ p.blunder }}</span>{% else %}0{% endif %}</td>
+                <td>{% if p.mistake > 0 %}<span style="color:var(--yellow)">{{ p.mistake }}</span>{% else %}0{% endif %}</td>
+                <td>{{ p.inaccuracy }}</td>
+                <td>{{ err_pct }}%</td>
+                <td style="width:200px;">
+                    <div class="phase-bar">
+                        {% if good > 0 %}<div class="segment good" style="flex:{{ good }};">{{ good }}</div>{% endif %}
+                        {% if p.inaccuracy > 0 %}<div class="segment inaccuracy" style="flex:{{ p.inaccuracy }};">{{ p.inaccuracy }}</div>{% endif %}
+                        {% if p.mistake > 0 %}<div class="segment mistake" style="flex:{{ p.mistake }};">{{ p.mistake }}</div>{% endif %}
+                        {% if p.blunder > 0 %}<div class="segment blunder" style="flex:{{ p.blunder }};">{{ p.blunder }}</div>{% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="grid grid-2">
+    <!-- Weakest openings -->
+    <div class="card">
+        <h2>Weakest Openings</h2>
+        <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:10px;">Openings where you struggle the most</p>
+        <table>
+            <thead><tr><th>ECO</th><th>Opening</th><th>Games</th><th>Accuracy</th><th>Blunders</th></tr></thead>
+            <tbody>
+                {% for o in report.weakest_openings[:7] %}
+                <tr>
+                    <td>{{ o.eco }}</td>
+                    <td><a href="{{ url_for('games', eco=o.eco, player=player) }}">{{ (o.opening or o.eco)[:25] }}</a></td>
+                    <td>{{ o.games }}</td>
+                    <td>{{ o.avg_accuracy }}%</td>
+                    <td>{% if o.blunders > 0 %}<span style="color:var(--red)">{{ o.blunders }}</span>{% else %}0{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Strongest openings -->
+    <div class="card">
+        <h2>Strongest Openings</h2>
+        <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:10px;">Openings where you perform best</p>
+        <table>
+            <thead><tr><th>ECO</th><th>Opening</th><th>Games</th><th>Accuracy</th><th>Blunders</th></tr></thead>
+            <tbody>
+                {% for o in report.strongest_openings[:7] %}
+                <tr>
+                    <td>{{ o.eco }}</td>
+                    <td><a href="{{ url_for('games', eco=o.eco, player=player) }}">{{ (o.opening or o.eco)[:25] }}</a></td>
+                    <td>{{ o.games }}</td>
+                    <td>{{ o.avg_accuracy }}%</td>
+                    <td>{{ o.blunders }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card" style="text-align:center;">
+    <a href="{{ url_for('blunders', player=player) }}" class="btn">View Your Worst Moves</a>
+</div>
+
+{% endif %}
+{% endblock %}
