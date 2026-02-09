@@ -1,5 +1,6 @@
 """SQLite database layer for the chess game database."""
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -36,6 +37,42 @@ CREATE INDEX IF NOT EXISTS idx_date ON games(date);
 CREATE INDEX IF NOT EXISTS idx_eco ON games(eco);
 CREATE INDEX IF NOT EXISTS idx_result ON games(result);
 CREATE INDEX IF NOT EXISTS idx_event ON games(event);
+
+CREATE TABLE IF NOT EXISTS move_analysis (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id     INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    ply         INTEGER NOT NULL,
+    move_number INTEGER NOT NULL,
+    side        TEXT NOT NULL,
+    move_san    TEXT NOT NULL,
+    move_uci    TEXT NOT NULL,
+    score_cp    INTEGER,
+    score_mate  INTEGER,
+    best_move_san TEXT,
+    best_move_uci TEXT,
+    best_score_cp INTEGER,
+    best_score_mate INTEGER,
+    classification TEXT NOT NULL,
+    UNIQUE(game_id, ply)
+);
+
+CREATE TABLE IF NOT EXISTS game_analysis (
+    game_id         INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    depth           INTEGER NOT NULL,
+    white_accuracy  REAL,
+    black_accuracy  REAL,
+    white_blunders  INTEGER DEFAULT 0,
+    white_mistakes  INTEGER DEFAULT 0,
+    white_inaccuracies INTEGER DEFAULT 0,
+    black_blunders  INTEGER DEFAULT 0,
+    black_mistakes  INTEGER DEFAULT 0,
+    black_inaccuracies INTEGER DEFAULT 0,
+    analyzed_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ma_game ON move_analysis(game_id);
+CREATE INDEX IF NOT EXISTS idx_ma_class ON move_analysis(classification);
+CREATE INDEX IF NOT EXISTS idx_ma_side ON move_analysis(side);
 """
 
 
@@ -272,6 +309,233 @@ class ChessDatabase:
         cur = self.conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    # ── Analysis storage ─────────────────────────────────────────────
+
+    def is_analyzed(self, game_id: int) -> bool:
+        """Check if a game has already been analyzed."""
+        row = self.conn.execute(
+            "SELECT 1 FROM game_analysis WHERE game_id = ?", (game_id,)
+        ).fetchone()
+        return row is not None
+
+    def unanalyzed_game_ids(self, player: str | None = None, limit: int = 0) -> list[int]:
+        """Return IDs of games not yet analyzed, optionally filtered by player."""
+        conditions = ["g.id NOT IN (SELECT game_id FROM game_analysis)"]
+        params: list = []
+        if player:
+            conditions.append("(g.white LIKE ? OR g.black LIKE ?)")
+            params.extend([f"%{player}%", f"%{player}%"])
+        where = " AND ".join(conditions)
+        query = f"SELECT g.id FROM games g WHERE {where} ORDER BY g.date DESC"
+        if limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return [r[0] for r in rows]
+
+    def save_analysis(self, game_id: int, depth: int, move_results: list[dict]):
+        """Save analysis results for a game (move-by-move + summary)."""
+        # Clear any previous analysis
+        self.conn.execute("DELETE FROM move_analysis WHERE game_id = ?", (game_id,))
+        self.conn.execute("DELETE FROM game_analysis WHERE game_id = ?", (game_id,))
+
+        for r in move_results:
+            self.conn.execute(
+                """INSERT INTO move_analysis
+                   (game_id, ply, move_number, side, move_san, move_uci,
+                    score_cp, score_mate, best_move_san, best_move_uci,
+                    best_score_cp, best_score_mate, classification)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    game_id, r["ply"], r["move_number"], r["side"],
+                    r["move_san"], r["move_uci"], r["score_cp"], r["score_mate"],
+                    r["best_move_san"], r["best_move_uci"],
+                    r["best_score_cp"], r["best_score_mate"], r["classification"],
+                ),
+            )
+
+        # Compute summary
+        counts = {"white": {}, "black": {}}
+        totals = {"white": 0, "black": 0}
+        for r in move_results:
+            side = r["side"]
+            cls = r["classification"]
+            counts[side][cls] = counts[side].get(cls, 0) + 1
+            totals[side] += 1
+
+        def accuracy(side_counts, total):
+            if total == 0:
+                return None
+            good = side_counts.get("best", 0) + side_counts.get("excellent", 0) + side_counts.get("good", 0)
+            return round(good / total * 100, 1)
+
+        self.conn.execute(
+            """INSERT INTO game_analysis
+               (game_id, depth, white_accuracy, black_accuracy,
+                white_blunders, white_mistakes, white_inaccuracies,
+                black_blunders, black_mistakes, black_inaccuracies)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                game_id, depth,
+                accuracy(counts["white"], totals["white"]),
+                accuracy(counts["black"], totals["black"]),
+                counts["white"].get("blunder", 0),
+                counts["white"].get("mistake", 0),
+                counts["white"].get("inaccuracy", 0),
+                counts["black"].get("blunder", 0),
+                counts["black"].get("mistake", 0),
+                counts["black"].get("inaccuracy", 0),
+            ),
+        )
+        self.conn.commit()
+
+    def get_analysis_summary(self, game_id: int) -> dict | None:
+        """Get the analysis summary for a game."""
+        row = self.conn.execute(
+            "SELECT * FROM game_analysis WHERE game_id = ?", (game_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_move_analysis(self, game_id: int) -> list[dict]:
+        """Get all move analysis rows for a game."""
+        rows = self.conn.execute(
+            "SELECT * FROM move_analysis WHERE game_id = ? ORDER BY ply", (game_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def analyzed_count(self) -> int:
+        """Return how many games have been analyzed."""
+        row = self.conn.execute("SELECT COUNT(*) FROM game_analysis").fetchone()
+        return row[0]
+
+    def get_blunders(
+        self, player: str, limit: int = 20, classifications: tuple = ("blunder", "mistake")
+    ) -> list[dict]:
+        """Get worst moves for a player across all analyzed games."""
+        placeholders = ",".join("?" * len(classifications))
+        query = f"""
+            SELECT ma.*, g.white, g.black, g.date, g.eco, g.opening, g.result
+            FROM move_analysis ma
+            JOIN games g ON g.id = ma.game_id
+            WHERE ma.classification IN ({placeholders})
+              AND (
+                (ma.side = 'white' AND g.white LIKE ?)
+                OR (ma.side = 'black' AND g.black LIKE ?)
+              )
+            ORDER BY
+                CASE ma.classification
+                    WHEN 'blunder' THEN 0
+                    WHEN 'mistake' THEN 1
+                    WHEN 'inaccuracy' THEN 2
+                    ELSE 3
+                END,
+                ABS(COALESCE(ma.best_score_cp, 0) - COALESCE(ma.score_cp, 0)) DESC
+            LIMIT ?
+        """
+        params = list(classifications) + [f"%{player}%", f"%{player}%", limit]
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_player_report(self, player: str) -> dict | None:
+        """Generate a comprehensive report for a player from analyzed games."""
+        # Get all analyzed games for this player
+        rows = self.conn.execute(
+            """SELECT ga.*, g.white, g.black, g.eco, g.opening, g.result,
+                      g.date, g.total_plies
+               FROM game_analysis ga
+               JOIN games g ON g.id = ga.game_id
+               WHERE g.white LIKE ? OR g.black LIKE ?
+               ORDER BY g.date DESC""",
+            (f"%{player}%", f"%{player}%"),
+        ).fetchall()
+        if not rows:
+            return None
+
+        games = [dict(r) for r in rows]
+        total = len(games)
+
+        # Per-game accuracy for the player
+        accuracies = []
+        total_blunders = total_mistakes = total_inaccuracies = 0
+        eco_stats: dict[str, dict] = {}  # eco -> {games, acc_sum, blunders, ...}
+
+        # Phase analysis: opening (ply 1-20), middlegame (21-60), endgame (61+)
+        phase_errors: dict[str, dict[str, int]] = {
+            "opening": {"blunder": 0, "mistake": 0, "inaccuracy": 0, "total": 0},
+            "middlegame": {"blunder": 0, "mistake": 0, "inaccuracy": 0, "total": 0},
+            "endgame": {"blunder": 0, "mistake": 0, "inaccuracy": 0, "total": 0},
+        }
+
+        for g in games:
+            is_white = player.lower() in g["white"].lower()
+            acc = g["white_accuracy"] if is_white else g["black_accuracy"]
+            if acc is not None:
+                accuracies.append(acc)
+
+            bl = g["white_blunders"] if is_white else g["black_blunders"]
+            mi = g["white_mistakes"] if is_white else g["black_mistakes"]
+            ina = g["white_inaccuracies"] if is_white else g["black_inaccuracies"]
+            total_blunders += bl
+            total_mistakes += mi
+            total_inaccuracies += ina
+
+            eco = g["eco"] or "?"
+            if eco not in eco_stats:
+                eco_stats[eco] = {"games": 0, "acc_sum": 0.0, "blunders": 0, "opening": g["opening"] or eco}
+            eco_stats[eco]["games"] += 1
+            if acc is not None:
+                eco_stats[eco]["acc_sum"] += acc
+            eco_stats[eco]["blunders"] += bl
+
+            # Get move-level data for phase analysis
+            side = "white" if is_white else "black"
+            move_rows = self.conn.execute(
+                """SELECT ply, classification FROM move_analysis
+                   WHERE game_id = ? AND side = ?""",
+                (g["game_id"], side),
+            ).fetchall()
+            for mr in move_rows:
+                ply = mr[0]
+                cls = mr[1]
+                if ply <= 20:
+                    phase = "opening"
+                elif ply <= 60:
+                    phase = "middlegame"
+                else:
+                    phase = "endgame"
+                phase_errors[phase]["total"] += 1
+                if cls in ("blunder", "mistake", "inaccuracy"):
+                    phase_errors[phase][cls] += 1
+
+        avg_accuracy = round(sum(accuracies) / len(accuracies), 1) if accuracies else None
+
+        # Top worst openings by average accuracy
+        opening_report = []
+        for eco, s in eco_stats.items():
+            if s["games"] >= 1:
+                avg = round(s["acc_sum"] / s["games"], 1) if s["games"] > 0 else 0
+                opening_report.append({
+                    "eco": eco,
+                    "opening": s["opening"],
+                    "games": s["games"],
+                    "avg_accuracy": avg,
+                    "blunders": s["blunders"],
+                })
+
+        opening_report.sort(key=lambda x: x["avg_accuracy"])
+
+        return {
+            "player": player,
+            "analyzed_games": total,
+            "avg_accuracy": avg_accuracy,
+            "total_blunders": total_blunders,
+            "total_mistakes": total_mistakes,
+            "total_inaccuracies": total_inaccuracies,
+            "phase_errors": phase_errors,
+            "weakest_openings": opening_report[:10],
+            "strongest_openings": list(reversed(opening_report[-10:])),
+        }
 
     def export_pgn(self, game_ids: list[int] | None = None) -> str:
         """Export games as PGN text. If game_ids is None, export all."""

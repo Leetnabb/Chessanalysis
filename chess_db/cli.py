@@ -82,6 +82,22 @@ def main(argv: list[str] | None = None):
     p_eval.add_argument("--multipv", type=int, default=3, help="Number of lines (default: 3)")
     p_eval.add_argument("--stockfish", help="Path to Stockfish binary")
 
+    # ── batch-analyze ────────────────────────────────────────────────
+    p_batch = subparsers.add_parser("batch-analyze", help="Batch-analyze games with Stockfish")
+    p_batch.add_argument("--player", help="Only analyze games for this player")
+    p_batch.add_argument("--limit", type=int, default=50, help="Max games to analyze (default: 50)")
+    p_batch.add_argument("--depth", type=int, default=14, help="Search depth (default: 14)")
+    p_batch.add_argument("--stockfish", help="Path to Stockfish binary")
+
+    # ── report ───────────────────────────────────────────────────────
+    p_report = subparsers.add_parser("report", help="Show learning report from analyzed games")
+    p_report.add_argument("player", help="Player name")
+
+    # ── blunders ─────────────────────────────────────────────────────
+    p_blunders = subparsers.add_parser("blunders", help="Show worst moves for learning")
+    p_blunders.add_argument("player", help="Player name")
+    p_blunders.add_argument("--limit", type=int, default=20, help="Number of blunders (default: 20)")
+
     args = parser.parse_args(argv)
 
     with ChessDatabase(args.db) as db:
@@ -107,6 +123,12 @@ def main(argv: list[str] | None = None):
             cmd_analyze(db, args)
         elif args.command == "eval":
             cmd_eval(args)
+        elif args.command == "batch-analyze":
+            cmd_batch_analyze(db, args)
+        elif args.command == "report":
+            cmd_report(db, args)
+        elif args.command == "blunders":
+            cmd_blunders(db, args)
 
 
 # ── Command implementations ──────────────────────────────────────────
@@ -391,6 +413,131 @@ def cmd_eval(args):
         print(f"Line {i}: {score_str}  {bar}")
         print(f"  PV: {pv_str}")
         print()
+
+
+def cmd_batch_analyze(db: ChessDatabase, args):
+    game_ids = db.unanalyzed_game_ids(player=args.player, limit=args.limit)
+    already = db.analyzed_count()
+    total_games = db.count()
+
+    if not game_ids:
+        print(f"All matching games already analyzed ({already}/{total_games}).")
+        return
+
+    print(f"Batch analysis: {len(game_ids)} game(s) to analyze (depth {args.depth})")
+    print(f"  Already analyzed: {already}/{total_games}")
+    if args.player:
+        print(f"  Filter: {args.player}")
+    print()
+
+    try:
+        with StockfishAnalyzer(stockfish_path=args.stockfish) as analyzer:
+            for i, gid in enumerate(game_ids, 1):
+                game = db.get_game(gid)
+                if not game or not game["moves"].strip():
+                    continue
+
+                white = game["white"][:15]
+                black = game["black"][:15]
+                print(f"  [{i}/{len(game_ids)}] #{gid} {white} vs {black} ", end="", flush=True)
+
+                try:
+                    results = analyzer.analyze_game(game["moves"], depth=args.depth)
+                    db.save_analysis(gid, args.depth, results)
+
+                    # Quick summary
+                    summary = db.get_analysis_summary(gid)
+                    w_acc = f"{summary['white_accuracy']:.0f}%" if summary["white_accuracy"] is not None else "?"
+                    b_acc = f"{summary['black_accuracy']:.0f}%" if summary["black_accuracy"] is not None else "?"
+                    errs = summary["white_blunders"] + summary["black_blunders"]
+                    print(f"  W:{w_acc} B:{b_acc} ({errs} blunder(s))")
+                except Exception as e:
+                    print(f"  ERROR: {e}")
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return
+
+    new_total = db.analyzed_count()
+    print(f"\nDone. {new_total}/{total_games} games analyzed.")
+
+
+def cmd_report(db: ChessDatabase, args):
+    report = db.get_player_report(args.player)
+    if report is None:
+        print(f"No analyzed games found for '{args.player}'.")
+        print("Run 'batch-analyze' first to analyze your games.")
+        return
+
+    print(f"=== Learning Report: {report['player']} ===")
+    print(f"  Analyzed games: {report['analyzed_games']}")
+    if report["avg_accuracy"] is not None:
+        print(f"  Average accuracy: {report['avg_accuracy']}%")
+    print(f"  Total blunders: {report['total_blunders']}")
+    print(f"  Total mistakes: {report['total_mistakes']}")
+    print(f"  Total inaccuracies: {report['total_inaccuracies']}")
+
+    # Phase breakdown
+    print(f"\n--- Errors by game phase ---")
+    print(f"{'Phase':<15} {'Moves':>6} {'Blunders':>9} {'Mistakes':>9} {'Inacc.':>7} {'Error%':>7}")
+    print("-" * 58)
+    for phase_name in ("opening", "middlegame", "endgame"):
+        p = report["phase_errors"][phase_name]
+        total = p["total"]
+        if total == 0:
+            continue
+        errors = p["blunder"] + p["mistake"] + p["inaccuracy"]
+        err_pct = round(errors / total * 100, 1)
+        print(
+            f"{phase_name:<15} {total:>6} {p['blunder']:>9} {p['mistake']:>9} "
+            f"{p['inaccuracy']:>7} {err_pct:>6.1f}%"
+        )
+
+    # Weakest openings
+    if report["weakest_openings"]:
+        print(f"\n--- Weakest openings (lowest accuracy) ---")
+        print(f"{'ECO':<6} {'Opening':<30} {'Games':>6} {'Acc%':>6} {'Blunders':>9}")
+        print("-" * 62)
+        for o in report["weakest_openings"][:7]:
+            name = (o["opening"] or o["eco"])[:29]
+            print(f"{o['eco']:<6} {name:<30} {o['games']:>6} {o['avg_accuracy']:>5.1f}% {o['blunders']:>9}")
+
+    # Strongest openings
+    if report["strongest_openings"]:
+        print(f"\n--- Strongest openings (highest accuracy) ---")
+        print(f"{'ECO':<6} {'Opening':<30} {'Games':>6} {'Acc%':>6} {'Blunders':>9}")
+        print("-" * 62)
+        for o in report["strongest_openings"][:7]:
+            name = (o["opening"] or o["eco"])[:29]
+            print(f"{o['eco']:<6} {name:<30} {o['games']:>6} {o['avg_accuracy']:>5.1f}% {o['blunders']:>9}")
+
+    print(f"\nTip: Run 'blunders {args.player}' to see your worst moves and learn from them.")
+
+
+def cmd_blunders(db: ChessDatabase, args):
+    moves = db.get_blunders(args.player, limit=args.limit)
+    if not moves:
+        print(f"No blunders/mistakes found for '{args.player}'.")
+        print("Run 'batch-analyze' first to analyze your games.")
+        return
+
+    print(f"=== Worst moves: {args.player} ===\n")
+    print(f"{'#':>3} {'Game':>6} {'Move':<8} {'Played':<10} {'Best':<10} {'Eval':>8} {'Best Eval':>10} {'Type':<10} {'Opening'}")
+    print("-" * 95)
+
+    for i, m in enumerate(moves, 1):
+        move_label = f"{m['move_number']}." if m["side"] == "white" else f"{m['move_number']}..."
+        score_str = format_score(m["score_cp"], m["score_mate"])
+        best_score_str = format_score(m["best_score_cp"], m["best_score_mate"])
+        opening = (m.get("opening") or m.get("eco") or "?")[:20]
+
+        print(
+            f"{i:>3} #{m['game_id']:<5} {move_label:<8} {m['move_san']:<10} "
+            f"{m['best_move_san']:<10} {score_str:>8} {best_score_str:>10} "
+            f"{m['classification']:<10} {opening}"
+        )
+
+    print(f"\nUse 'analyze <game-id>' to see the full game analysis.")
 
 
 if __name__ == "__main__":
