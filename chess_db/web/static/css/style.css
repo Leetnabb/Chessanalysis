@@ -148,6 +148,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .badge-inaccuracy { background: #e65100; color: #ffe0b2; }
 .badge-mistake { background: #bf360c; color: #ffccbc; }
 .badge-blunder { background: #b71c1c; color: #ffcdd2; }
+.badge-book { background: #795548; color: #d7ccc8; }
 
 /* ── Eval bar ───────────────────────────────── */
 

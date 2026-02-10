@@ -6,6 +6,8 @@ import chess.engine
 import chess.pgn
 import io
 
+from .openings import is_book_move
+
 
 DEFAULT_STOCKFISH_PATH = "stockfish"
 STOCKFISH_SEARCH_PATHS = [
@@ -135,10 +137,14 @@ class StockfishAnalyzer:
         start_ply = (move_range[0] if move_range else 1)
         end_ply = (move_range[1] if move_range else len(all_moves))
 
+        in_book = True  # Track whether we're still in book territory
+
         for ply_idx, move in enumerate(all_moves):
             ply = ply_idx + 1
 
             if ply < start_ply:
+                if in_book and not is_book_move(board, move):
+                    in_book = False
                 board.push(move)
                 # Update prev_score for continuity if close to range
                 if ply == start_ply - 1:
@@ -148,6 +154,43 @@ class StockfishAnalyzer:
                 continue
             if ply > end_ply:
                 break
+
+            # Check if this move is a book move
+            move_is_book = in_book and is_book_move(board, move)
+            if not move_is_book:
+                in_book = False
+
+            move_san = board.san(move)
+            move_uci = move.uci()
+
+            if move_is_book:
+                # Book move: skip engine analysis, use lightweight eval
+                board.push(move)
+                post_info = _analyse_single(engine, board, depth)
+                post_score = post_info["score"].white()
+                score_cp = post_score.score()
+                score_mate = post_score.mate()
+
+                move_number = (ply + 1) // 2
+                side = "white" if ply % 2 == 1 else "black"
+
+                results.append({
+                    "ply": ply,
+                    "move_number": move_number,
+                    "side": side,
+                    "move_san": move_san,
+                    "move_uci": move_uci,
+                    "score_cp": score_cp,
+                    "score_mate": score_mate,
+                    "best_move_san": move_san,
+                    "best_move_uci": move_uci,
+                    "best_score_cp": score_cp,
+                    "best_score_mate": score_mate,
+                    "classification": "book",
+                })
+
+                prev_score_cp = score_cp if score_cp is not None else 0
+                continue
 
             # Get best move BEFORE playing the move
             pre_info = _analyse_single(engine, board, depth)
@@ -161,8 +204,6 @@ class StockfishAnalyzer:
             best_score_mate = pre_score.mate()
 
             # Play the actual move
-            move_san = board.san(move)
-            move_uci = move.uci()
             board.push(move)
 
             # Evaluate position AFTER the move

@@ -367,7 +367,8 @@ class ChessDatabase:
         def accuracy(side_counts, total):
             if total == 0:
                 return None
-            good = side_counts.get("best", 0) + side_counts.get("excellent", 0) + side_counts.get("good", 0)
+            good = (side_counts.get("best", 0) + side_counts.get("excellent", 0)
+                    + side_counts.get("good", 0) + side_counts.get("book", 0))
             return round(good / total * 100, 1)
 
         self.conn.execute(

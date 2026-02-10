@@ -86,7 +86,8 @@
                         {% set m = moves[ns.i] %}
                         <td class="move-cell" data-ply="{{ m.ply }}">
                             {{ m.san }}
-                            {% if m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
+                            {% if m.classification == 'book' %}<span class="badge badge-book">book</span>
+                            {% elif m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
                             {% elif m.classification == 'mistake' %}<span class="badge badge-mistake">?</span>
                             {% elif m.classification == 'inaccuracy' %}<span class="badge badge-inaccuracy">?!</span>
                             {% endif %}
@@ -100,7 +101,8 @@
                         {% set m = moves[ns.i] %}
                         <td class="move-cell" data-ply="{{ m.ply }}">
                             {{ m.san }}
-                            {% if m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
+                            {% if m.classification == 'book' %}<span class="badge badge-book">book</span>
+                            {% elif m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
                             {% elif m.classification == 'mistake' %}<span class="badge badge-mistake">?</span>
                             {% elif m.classification == 'inaccuracy' %}<span class="badge badge-inaccuracy">?!</span>
                             {% endif %}
