@@ -250,13 +250,13 @@ def _classify_move(
 
     if loss <= 10:
         return "best"
-    elif loss <= 30:
+    elif loss <= 25:
         return "excellent"
-    elif loss <= 80:
+    elif loss <= 50:
         return "good"
-    elif loss <= 150:
+    elif loss <= 100:
         return "inaccuracy"
-    elif loss <= 300:
+    elif loss <= 200:
         return "mistake"
     else:
         return "blunder"

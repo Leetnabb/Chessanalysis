@@ -13,13 +13,11 @@
     <div style="color:var(--text-dim)">
         {{ game.date }} | {{ game.eco }} {{ game.opening or '' }} | {{ game.result }}
     </div>
-    {% if not analysis %}
     <form action="{{ url_for('analyze_game', game_id=game.id) }}" method="post" style="display:flex;gap:8px;align-items:center;">
         <label style="font-size:0.85em; color:var(--text-dim);">Depth:</label>
         <input type="number" name="depth" value="14" min="6" max="24" style="width:60px;">
-        <button type="submit" class="btn btn-sm">Analyze with Stockfish</button>
+        <button type="submit" class="btn btn-sm">{% if analysis %}Re-analyze{% else %}Analyze with Stockfish{% endif %}</button>
     </form>
-    {% endif %}
 </div>
 
 {% if analysis %}
@@ -91,7 +89,6 @@
                             {% if m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
                             {% elif m.classification == 'mistake' %}<span class="badge badge-mistake">?</span>
                             {% elif m.classification == 'inaccuracy' %}<span class="badge badge-inaccuracy">?!</span>
-                            {% elif m.classification == 'best' %}<span class="badge badge-best">!!</span>
                             {% endif %}
                         </td>
                         <td style="font-size:0.8em; color:var(--text-dim);">{{ m.scoreStr }}</td>
@@ -106,7 +103,6 @@
                             {% if m.classification == 'blunder' %}<span class="badge badge-blunder">??</span>
                             {% elif m.classification == 'mistake' %}<span class="badge badge-mistake">?</span>
                             {% elif m.classification == 'inaccuracy' %}<span class="badge badge-inaccuracy">?!</span>
-                            {% elif m.classification == 'best' %}<span class="badge badge-best">!!</span>
                             {% endif %}
                         </td>
                         <td style="font-size:0.8em; color:var(--text-dim);">{{ m.scoreStr }}</td>
