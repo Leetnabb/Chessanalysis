@@ -135,7 +135,6 @@ class StockfishAnalyzer:
 
         all_moves = list(pgn_game.mainline_moves())
         results = []
-        prev_score_cp = 0  # starting eval
 
         # Extract clock times from PGN comments
         clock_times = _extract_clocks(pgn_game)
@@ -145,6 +144,14 @@ class StockfishAnalyzer:
 
         in_book = True  # Track whether we're still in book territory
 
+        # Single-analysis optimization: analyze each position only ONCE.
+        # The analysis of position after move N gives us:
+        #   - the "post" eval for move N (score of resulting position)
+        #   - the "pre" best move + eval for move N+1
+        # This halves the number of engine calls.
+        cached_info = None  # Reused analysis from previous iteration
+        prev_score_cp = 0
+
         for ply_idx, move in enumerate(all_moves):
             ply = ply_idx + 1
 
@@ -152,10 +159,10 @@ class StockfishAnalyzer:
                 if in_book and not is_book_move(board, move):
                     in_book = False
                 board.push(move)
-                # Update prev_score for continuity if close to range
+                cached_info = None
                 if ply == start_ply - 1:
-                    info = _analyse_single(engine, board, depth, time_limit)
-                    score = info["score"].white()
+                    cached_info = _analyse_single(engine, board, depth, time_limit)
+                    score = cached_info["score"].white()
                     prev_score_cp = score.score() if score.score() is not None else 0
                 continue
             if ply > end_ply:
@@ -170,10 +177,10 @@ class StockfishAnalyzer:
             move_uci = move.uci()
 
             if move_is_book:
-                # Book move: skip deep analysis, use quick eval (depth 8, 0.1s max)
+                # Book move: skip deep analysis, use quick eval
                 board.push(move)
-                post_info = _analyse_single(engine, board, min(depth, 8), time_limit=0.1)
-                post_score = post_info["score"].white()
+                cached_info = _analyse_single(engine, board, min(depth, 8), time_limit=0.1)
+                post_score = cached_info["score"].white()
                 score_cp = post_score.score()
                 score_mate = post_score.mate()
 
@@ -197,10 +204,21 @@ class StockfishAnalyzer:
                 })
 
                 prev_score_cp = score_cp if score_cp is not None else 0
+                # Note: cached_info from book eval is shallow, so invalidate
+                # for next non-book move to get proper deep analysis
+                if ply < len(all_moves):
+                    next_move = all_moves[ply]  # 0-indexed, ply is next
+                    if not (in_book and is_book_move(board, next_move)):
+                        cached_info = None  # Need fresh deep analysis
                 continue
 
-            # Get best move BEFORE playing the move
-            pre_info = _analyse_single(engine, board, depth, time_limit)
+            # Get best move from pre-move analysis.
+            # Reuse cached analysis if available (from previous move's post-analysis)
+            if cached_info is not None:
+                pre_info = cached_info
+            else:
+                pre_info = _analyse_single(engine, board, depth, time_limit)
+
             pre_score = pre_info["score"].white()
             best_pv = pre_info.get("pv", [])
             best_move = best_pv[0] if best_pv else None
@@ -213,9 +231,10 @@ class StockfishAnalyzer:
             # Play the actual move
             board.push(move)
 
-            # Evaluate position AFTER the move
-            post_info = _analyse_single(engine, board, depth, time_limit)
-            post_score = post_info["score"].white()
+            # Analyze position AFTER the move.
+            # This result will be reused as pre-analysis for the NEXT move.
+            cached_info = _analyse_single(engine, board, depth, time_limit)
+            post_score = cached_info["score"].white()
             score_cp = post_score.score()
             score_mate = post_score.mate()
 
@@ -229,7 +248,6 @@ class StockfishAnalyzer:
             error_type = ""
             tactics_missed = []
             if classification in ("inaccuracy", "mistake", "blunder") and best_move:
-                # Use pre-move board (pop, analyze, push back)
                 board.pop()
                 error_info = categorize_error(board, move, best_move, 0)
                 error_type = error_info["error_type"]

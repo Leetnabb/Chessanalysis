@@ -601,11 +601,11 @@ def cmd_smart_analyze(db: ChessDatabase, args):
     if user_tl > 0:
         tier_time_limits = {"recent": user_tl, "older": user_tl, "ancient": user_tl}
     else:
-        tier_time_limits = {"recent": 1.5, "older": 1.0, "ancient": 0.5}
+        tier_time_limits = {"recent": 0.5, "older": 0.3, "ancient": 0.2}
     tier_labels = {
-        "recent": "Recent (last 2 years) - depth 18, 1.5s/pos",
-        "older": "Older (2-5 years) - depth 14, 1.0s/pos",
-        "ancient": "Ancient (5+ years) - depth 10, 0.5s/pos",
+        "recent": f"Recent (last 2 years) - depth 18, {tier_time_limits['recent']}s/pos",
+        "older": f"Older (2-5 years) - depth 14, {tier_time_limits['older']}s/pos",
+        "ancient": f"Ancient (5+ years) - depth 10, {tier_time_limits['ancient']}s/pos",
     }
 
     for g in all_games:
@@ -674,9 +674,9 @@ def cmd_smart_analyze(db: ChessDatabase, args):
         # Estimate time based on time limit per position
         pos_time = tier_time_limits[tier_name]
         avg_plies = sum(g.get("total_plies", 60) for g in to_analyze) / max(len(to_analyze), 1)
-        # 2 analyses per non-book ply, ~10 book plies are fast
+        # ~1 analysis per ply (single-analysis optimization), ~10 book plies are fast
         effective_plies = max(avg_plies - 10, 20)
-        time_per_game = effective_plies * 2 * pos_time
+        time_per_game = effective_plies * pos_time
         total_est = time_per_game * need_analysis
         if total_est < 3600:
             est_str = f"~{total_est / 60:.0f} minutes"
