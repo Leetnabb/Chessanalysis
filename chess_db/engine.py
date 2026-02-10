@@ -7,6 +7,7 @@ import chess.pgn
 import io
 
 from .openings import is_book_move
+from .tactics import categorize_error
 
 
 DEFAULT_STOCKFISH_PATH = "stockfish"
@@ -134,6 +135,9 @@ class StockfishAnalyzer:
         results = []
         prev_score_cp = 0  # starting eval
 
+        # Extract clock times from PGN comments
+        clock_times = _extract_clocks(pgn_game)
+
         start_ply = (move_range[0] if move_range else 1)
         end_ply = (move_range[1] if move_range else len(all_moves))
 
@@ -187,6 +191,7 @@ class StockfishAnalyzer:
                     "best_score_cp": score_cp,
                     "best_score_mate": score_mate,
                     "classification": "book",
+                    "clock_seconds": clock_times.get(ply),
                 })
 
                 prev_score_cp = score_cp if score_cp is not None else 0
@@ -218,6 +223,17 @@ class StockfishAnalyzer:
                 score_mate, best_score_mate, board.turn  # board.turn is now opponent's turn
             )
 
+            # Detect tactical patterns for mistakes/blunders
+            error_type = ""
+            tactics_missed = []
+            if classification in ("inaccuracy", "mistake", "blunder") and best_move:
+                # Use pre-move board (pop, analyze, push back)
+                board.pop()
+                error_info = categorize_error(board, move, best_move, 0)
+                error_type = error_info["error_type"]
+                tactics_missed = error_info["tactics_missed"]
+                board.push(move)
+
             move_number = (ply + 1) // 2
             side = "white" if ply % 2 == 1 else "black"
 
@@ -234,11 +250,34 @@ class StockfishAnalyzer:
                 "best_score_cp": best_score_cp,
                 "best_score_mate": best_score_mate,
                 "classification": classification,
+                "error_type": error_type,
+                "tactics_missed": tactics_missed,
+                "clock_seconds": clock_times.get(ply),
             })
 
             prev_score_cp = score_cp if score_cp is not None else 0
 
         return results
+
+
+def _extract_clocks(pgn_game) -> dict[int, float]:
+    """Extract clock times from PGN comments like {[%clk H:MM:SS]}.
+
+    Returns a dict mapping ply number (1-indexed) to remaining seconds.
+    """
+    import re
+    clocks = {}
+    node = pgn_game
+    ply = 0
+    while node.variations:
+        node = node.variation(0)
+        ply += 1
+        comment = node.comment or ""
+        match = re.search(r'\[%clk\s+(\d+):(\d+):(\d+)', comment)
+        if match:
+            h, m, s = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            clocks[ply] = h * 3600 + m * 60 + s
+    return clocks
 
 
 def _analyse_single(engine, board, depth):

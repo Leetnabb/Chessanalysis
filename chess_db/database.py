@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS move_analysis (
     best_score_cp INTEGER,
     best_score_mate INTEGER,
     classification TEXT NOT NULL,
+    error_type  TEXT DEFAULT '',
+    tactics_missed TEXT DEFAULT '',
+    clock_seconds REAL,
     UNIQUE(game_id, ply)
 );
 
@@ -87,6 +90,13 @@ class ChessDatabase:
 
     def _init_schema(self):
         self.conn.executescript(SCHEMA)
+        # Migrate: add new columns if they don't exist yet
+        try:
+            self.conn.execute("SELECT error_type FROM move_analysis LIMIT 1")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE move_analysis ADD COLUMN error_type TEXT DEFAULT ''")
+            self.conn.execute("ALTER TABLE move_analysis ADD COLUMN tactics_missed TEXT DEFAULT ''")
+            self.conn.execute("ALTER TABLE move_analysis ADD COLUMN clock_seconds REAL")
         self.conn.commit()
 
     def close(self):
@@ -341,17 +351,20 @@ class ChessDatabase:
         self.conn.execute("DELETE FROM game_analysis WHERE game_id = ?", (game_id,))
 
         for r in move_results:
+            tactics_json = json.dumps(r.get("tactics_missed", []))
             self.conn.execute(
                 """INSERT INTO move_analysis
                    (game_id, ply, move_number, side, move_san, move_uci,
                     score_cp, score_mate, best_move_san, best_move_uci,
-                    best_score_cp, best_score_mate, classification)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    best_score_cp, best_score_mate, classification,
+                    error_type, tactics_missed, clock_seconds)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     game_id, r["ply"], r["move_number"], r["side"],
                     r["move_san"], r["move_uci"], r["score_cp"], r["score_mate"],
                     r["best_move_san"], r["best_move_uci"],
                     r["best_score_cp"], r["best_score_mate"], r["classification"],
+                    r.get("error_type", ""), tactics_json, r.get("clock_seconds"),
                 ),
             )
 
@@ -538,6 +551,214 @@ class ChessDatabase:
             "strongest_openings": list(reversed(opening_report[-10:])),
         }
 
+    def get_player_insights(self, player: str, recent_months: int = 24) -> dict:
+        """Generate comprehensive improvement insights for a player.
+
+        Returns detailed analysis including:
+          - Accuracy trends over time
+          - Error type breakdown (tactical/positional/strategic)
+          - Missed tactics frequency
+          - Phase weaknesses
+          - Opening performance
+          - Win patterns
+        """
+        # Get all analyzed games for this player, ordered by date
+        rows = self.conn.execute(
+            """SELECT ga.*, g.id as gid, g.white, g.black, g.eco, g.opening,
+                      g.result, g.date, g.total_plies, g.time_control,
+                      g.white_elo, g.black_elo
+               FROM game_analysis ga
+               JOIN games g ON g.id = ga.game_id
+               WHERE g.white LIKE ? OR g.black LIKE ?
+               ORDER BY g.date ASC""",
+            (f"%{player}%", f"%{player}%"),
+        ).fetchall()
+        if not rows:
+            return None
+
+        games = [dict(r) for r in rows]
+
+        # ── Accuracy trend ─────────────────────────────
+        accuracy_trend = []
+        for g in games:
+            is_white = player.lower() in g["white"].lower()
+            acc = g["white_accuracy"] if is_white else g["black_accuracy"]
+            if acc is not None:
+                accuracy_trend.append({
+                    "date": g["date"],
+                    "accuracy": acc,
+                    "game_id": g["gid"],
+                    "opponent": g["black"] if is_white else g["white"],
+                    "result": g["result"],
+                    "color": "white" if is_white else "black",
+                })
+
+        # ── Error type breakdown ───────────────────────
+        error_types = {"tactical": 0, "positional": 0, "strategic": 0, "unknown": 0}
+        tactics_missed = {}
+        phase_errors = {
+            "opening": {"total": 0, "errors": 0, "tactical": 0, "positional": 0},
+            "middlegame": {"total": 0, "errors": 0, "tactical": 0, "positional": 0},
+            "endgame": {"total": 0, "errors": 0, "tactical": 0, "positional": 0},
+        }
+
+        for g in games:
+            is_white = player.lower() in g["white"].lower()
+            side = "white" if is_white else "black"
+
+            move_rows = self.conn.execute(
+                """SELECT ply, classification, error_type, tactics_missed
+                   FROM move_analysis WHERE game_id = ? AND side = ?""",
+                (g["gid"], side),
+            ).fetchall()
+
+            for mr in move_rows:
+                ply = mr[0]
+                cls = mr[1]
+                err_type = mr[2] or ""
+                tactics_json = mr[3] or "[]"
+
+                # Phase
+                if ply <= 20:
+                    phase = "opening"
+                elif ply <= 60:
+                    phase = "middlegame"
+                else:
+                    phase = "endgame"
+
+                phase_errors[phase]["total"] += 1
+
+                if cls in ("inaccuracy", "mistake", "blunder"):
+                    phase_errors[phase]["errors"] += 1
+
+                    if err_type:
+                        error_types[err_type] = error_types.get(err_type, 0) + 1
+                        if err_type == "tactical":
+                            phase_errors[phase]["tactical"] += 1
+                        elif err_type == "positional":
+                            phase_errors[phase]["positional"] += 1
+
+                    # Count missed tactics
+                    try:
+                        tactics = json.loads(tactics_json)
+                        for t in tactics:
+                            tactics_missed[t] = tactics_missed.get(t, 0) + 1
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        # Sort missed tactics by frequency
+        tactics_missed_sorted = sorted(tactics_missed.items(), key=lambda x: -x[1])
+
+        # ── Opening performance ────────────────────────
+        opening_stats = {}
+        for g in games:
+            is_white = player.lower() in g["white"].lower()
+            eco = g["eco"] or "?"
+            key = eco
+
+            if key not in opening_stats:
+                opening_stats[key] = {
+                    "eco": eco, "opening": g["opening"] or eco,
+                    "games": 0, "wins": 0, "draws": 0, "losses": 0,
+                    "acc_sum": 0.0,
+                }
+
+            opening_stats[key]["games"] += 1
+            acc = g["white_accuracy"] if is_white else g["black_accuracy"]
+            if acc is not None:
+                opening_stats[key]["acc_sum"] += acc
+
+            result = g["result"]
+            if (result == "1-0" and is_white) or (result == "0-1" and not is_white):
+                opening_stats[key]["wins"] += 1
+            elif result == "1/2-1/2":
+                opening_stats[key]["draws"] += 1
+            elif result != "*":
+                opening_stats[key]["losses"] += 1
+
+        opening_list = []
+        for s in opening_stats.values():
+            s["avg_accuracy"] = round(s["acc_sum"] / s["games"], 1) if s["games"] > 0 else 0
+            s["win_rate"] = round(s["wins"] / s["games"] * 100, 1) if s["games"] > 0 else 0
+            s["score"] = round((s["wins"] + s["draws"] * 0.5) / s["games"] * 100, 1) if s["games"] > 0 else 0
+            del s["acc_sum"]
+            opening_list.append(s)
+
+        best_openings = sorted(opening_list, key=lambda x: (-x["score"], -x["games"]))
+        worst_openings = sorted(opening_list, key=lambda x: (x["score"], -x["games"]))
+
+        # ── Win/loss patterns ──────────────────────────
+        total_games = len(games)
+        wins = draws = losses = 0
+        win_as_white = win_as_black = 0
+        games_as_white = games_as_black = 0
+
+        for g in games:
+            is_white = player.lower() in g["white"].lower()
+            if is_white:
+                games_as_white += 1
+            else:
+                games_as_black += 1
+
+            result = g["result"]
+            if (result == "1-0" and is_white) or (result == "0-1" and not is_white):
+                wins += 1
+                if is_white:
+                    win_as_white += 1
+                else:
+                    win_as_black += 1
+            elif result == "1/2-1/2":
+                draws += 1
+            elif result != "*":
+                losses += 1
+
+        # ── Time control performance ───────────────────
+        tc_stats = {}
+        for g in games:
+            tc = g["time_control"] or "?"
+            # Categorize time control
+            tc_cat = _categorize_time_control(tc)
+            if tc_cat not in tc_stats:
+                tc_stats[tc_cat] = {"games": 0, "wins": 0, "acc_sum": 0.0, "acc_count": 0}
+            tc_stats[tc_cat]["games"] += 1
+            is_white = player.lower() in g["white"].lower()
+            result = g["result"]
+            if (result == "1-0" and is_white) or (result == "0-1" and not is_white):
+                tc_stats[tc_cat]["wins"] += 1
+            acc = g["white_accuracy"] if is_white else g["black_accuracy"]
+            if acc is not None:
+                tc_stats[tc_cat]["acc_sum"] += acc
+                tc_stats[tc_cat]["acc_count"] += 1
+
+        tc_report = []
+        for cat, s in tc_stats.items():
+            tc_report.append({
+                "category": cat,
+                "games": s["games"],
+                "win_rate": round(s["wins"] / s["games"] * 100, 1) if s["games"] > 0 else 0,
+                "avg_accuracy": round(s["acc_sum"] / s["acc_count"], 1) if s["acc_count"] > 0 else None,
+            })
+
+        return {
+            "player": player,
+            "total_analyzed": total_games,
+            "accuracy_trend": accuracy_trend,
+            "error_types": error_types,
+            "tactics_missed": tactics_missed_sorted,
+            "phase_errors": phase_errors,
+            "best_openings": [o for o in best_openings if o["games"] >= 2][:10],
+            "worst_openings": [o for o in worst_openings if o["games"] >= 2][:10],
+            "all_openings": sorted(opening_list, key=lambda x: -x["games"]),
+            "wins": wins,
+            "draws": draws,
+            "losses": losses,
+            "games_as_white": games_as_white,
+            "games_as_black": games_as_black,
+            "win_as_white": win_as_white,
+            "win_as_black": win_as_black,
+            "time_control_stats": tc_report,
+        }
+
     def export_pgn(self, game_ids: list[int] | None = None) -> str:
         """Export games as PGN text. If game_ids is None, export all."""
         if game_ids:
@@ -572,3 +793,25 @@ class ChessDatabase:
             parts.append(pgn)
 
         return "\n".join(parts)
+
+
+def _categorize_time_control(tc: str) -> str:
+    """Categorize a time control string into bullet/blitz/rapid/classical."""
+    if not tc or tc == "?" or tc == "-":
+        return "Unknown"
+    try:
+        # Format: "base+increment" or "base"
+        parts = tc.replace("+", "/").split("/")
+        base = int(parts[0])
+        inc = int(parts[1]) if len(parts) > 1 else 0
+        total = base + 40 * inc  # Estimated game time
+        if total < 180:
+            return "Bullet"
+        elif total < 600:
+            return "Blitz"
+        elif total < 1800:
+            return "Rapid"
+        else:
+            return "Classical"
+    except (ValueError, IndexError):
+        return "Unknown"

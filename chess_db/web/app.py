@@ -140,6 +140,20 @@ def create_app(db_path: str = DEFAULT_DB) -> Flask:
             stats=stats,
         )
 
+    # ── Improvement insights ─────────────────────────────────────
+
+    @app.route("/insights/<player>")
+    def insights(player: str):
+        with get_db() as db:
+            data = db.get_player_insights(player)
+            stats = db.player_stats(player)
+        return render_template(
+            "insights.html",
+            player=player,
+            data=data,
+            stats=stats,
+        )
+
     # ── Blunders ──────────────────────────────────────────────────
 
     @app.route("/blunders/<player>")

@@ -58,7 +58,10 @@
                     <td>{{ p.games }}</td>
                     <td>{{ p.wins }}</td>
                     <td>{{ p.peak_elo or '-' }}</td>
-                    <td><a href="{{ url_for('blunders', player=p.name) }}" class="btn btn-sm btn-secondary">Blunders</a></td>
+                    <td style="white-space:nowrap;">
+                        <a href="{{ url_for('insights', player=p.name) }}" class="btn btn-sm">Insights</a>
+                        <a href="{{ url_for('blunders', player=p.name) }}" class="btn btn-sm btn-secondary">Blunders</a>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

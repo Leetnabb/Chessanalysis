@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+{% block title %}Improvement Insights - {{ player }}{% endblock %}
+
+{% block content %}
+<h1>Improvement Insights: {{ player }}</h1>
+
+{% if not data %}
+<div class="card" style="text-align:center; padding:40px; color:var(--text-dim);">
+    No analyzed games found. Analyze some games first.
+</div>
+{% else %}
+
+<!-- Overview -->
+<div class="grid grid-4" style="margin-bottom:20px;">
+    <div class="card stat-card" style="padding:12px;">
+        <div class="value">{{ data.total_analyzed }}</div>
+        <div class="label">Games Analyzed</div>
+    </div>
+    <div class="card stat-card" style="padding:12px;">
+        <div class="value">{{ data.wins }}-{{ data.draws }}-{{ data.losses }}</div>
+        <div class="label">W-D-L</div>
+    </div>
+    <div class="card stat-card" style="padding:12px;">
+        <div class="value">{{ "%.0f"|format(data.accuracy_trend[-1].accuracy) if data.accuracy_trend else '?' }}%</div>
+        <div class="label">Latest Accuracy</div>
+    </div>
+    <div class="card stat-card" style="padding:12px;">
+        {% set avg_acc = data.accuracy_trend | map(attribute='accuracy') | list %}
+        <div class="value">{{ "%.0f"|format(avg_acc | sum / avg_acc | length) if avg_acc else '?' }}%</div>
+        <div class="label">Average Accuracy</div>
+    </div>
+</div>
+
+<!-- Accuracy Trend Chart -->
+<div class="card">
+    <h2>Accuracy Trend</h2>
+    <div id="accuracy-chart" style="height:200px; position:relative; overflow:hidden;">
+        <canvas id="accuracy-canvas"></canvas>
+    </div>
+</div>
+
+<!-- Error Analysis -->
+<div class="grid grid-2">
+    <!-- Error Types -->
+    <div class="card">
+        <h2>Error Types</h2>
+        <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:12px;">
+            What kind of mistakes do you make?
+        </p>
+        {% set total_errors = data.error_types.tactical + data.error_types.positional + data.error_types.strategic %}
+        {% if total_errors > 0 %}
+        <div class="error-bars">
+            {% for etype, count in [('tactical', data.error_types.tactical), ('positional', data.error_types.positional), ('strategic', data.error_types.strategic)] %}
+            {% if count > 0 %}
+            <div style="margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span style="font-weight:600; text-transform:capitalize;">
+                        {% if etype == 'tactical' %}Taktisk{% elif etype == 'positional' %}Posisjonell{% else %}Strategisk{% endif %}
+                    </span>
+                    <span style="color:var(--text-dim);">{{ count }} ({{ "%.0f"|format(count / total_errors * 100) }}%)</span>
+                </div>
+                <div style="height:8px; background:var(--bg); border-radius:4px; overflow:hidden;">
+                    <div style="height:100%; width:{{ count / total_errors * 100 }}%;
+                                background:{% if etype == 'tactical' %}var(--red){% elif etype == 'positional' %}var(--yellow){% else %}var(--accent){% endif %};
+                                border-radius:4px;"></div>
+                </div>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% else %}
+        <p style="color:var(--text-dim);">Not enough data yet. Re-analyze games to detect error types.</p>
+        {% endif %}
+    </div>
+
+    <!-- Missed Tactics -->
+    <div class="card">
+        <h2>Missed Tactics</h2>
+        <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:12px;">
+            Which tactical patterns do you miss most often?
+        </p>
+        {% if data.tactics_missed %}
+        <table>
+            <thead><tr><th>Pattern</th><th>Missed</th></tr></thead>
+            <tbody>
+            {% set tactic_labels = {
+                'fork': 'Gaffel',
+                'pin': 'Binding',
+                'skewer': 'Spyd',
+                'discovered_attack': 'Avdekker',
+                'back_rank': 'Bakrekke',
+                'hanging_piece': 'Hengende brikke',
+                'removing_defender': 'Fjerne forsvarer',
+                'promotion': 'Bondeforvandling'
+            } %}
+            {% for tactic, count in data.tactics_missed %}
+            <tr>
+                <td style="font-weight:600;">{{ tactic_labels.get(tactic, tactic) }}</td>
+                <td>{{ count }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:var(--text-dim);">No tactical patterns detected yet. Re-analyze games for tactical insights.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Phase Analysis -->
+<div class="card">
+    <h2>Where Do You Make Mistakes?</h2>
+    <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:15px;">
+        Error distribution across game phases
+    </p>
+    <div class="grid grid-3">
+        {% for phase_name, phase_label in [('opening', 'Opening (1-10)'), ('middlegame', 'Middlegame (11-30)'), ('endgame', 'Endgame (31+)')] %}
+        {% set p = data.phase_errors[phase_name] %}
+        <div style="text-align:center;">
+            <div style="font-weight:700; margin-bottom:8px;">{{ phase_label }}</div>
+            {% if p.total > 0 %}
+            <div style="font-size:2em; font-weight:700;
+                        color:{% if p.errors / p.total > 0.3 %}var(--red){% elif p.errors / p.total > 0.15 %}var(--yellow){% else %}var(--green){% endif %};">
+                {{ "%.0f"|format((1 - p.errors / p.total) * 100) }}%
+            </div>
+            <div style="color:var(--text-dim); font-size:0.85em;">accuracy</div>
+            <div style="margin-top:6px; font-size:0.8em; color:var(--text-dim);">
+                {{ p.errors }} errors / {{ p.total }} moves
+            </div>
+            {% if p.tactical > 0 or p.positional > 0 %}
+            <div style="margin-top:4px; font-size:0.75em;">
+                {% if p.tactical > 0 %}<span style="color:var(--red);">{{ p.tactical }} tactical</span> {% endif %}
+                {% if p.positional > 0 %}<span style="color:var(--yellow);">{{ p.positional }} positional</span>{% endif %}
+            </div>
+            {% endif %}
+            {% else %}
+            <div style="color:var(--text-dim);">No data</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Color Performance -->
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Performance by Color</h2>
+        <table>
+            <thead><tr><th>Color</th><th>Games</th><th>Wins</th><th>Win Rate</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td style="font-weight:600;">White</td>
+                    <td>{{ data.games_as_white }}</td>
+                    <td>{{ data.win_as_white }}</td>
+                    <td>{{ "%.0f"|format(data.win_as_white / data.games_as_white * 100) if data.games_as_white else 0 }}%</td>
+                </tr>
+                <tr>
+                    <td style="font-weight:600;">Black</td>
+                    <td>{{ data.games_as_black }}</td>
+                    <td>{{ data.win_as_black }}</td>
+                    <td>{{ "%.0f"|format(data.win_as_black / data.games_as_black * 100) if data.games_as_black else 0 }}%</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Time Control -->
+    <div class="card">
+        <h2>Performance by Time Control</h2>
+        {% if data.time_control_stats %}
+        <table>
+            <thead><tr><th>Format</th><th>Games</th><th>Win Rate</th><th>Accuracy</th></tr></thead>
+            <tbody>
+            {% for tc in data.time_control_stats | sort(attribute='games', reverse=True) %}
+            <tr>
+                <td style="font-weight:600;">{{ tc.category }}</td>
+                <td>{{ tc.games }}</td>
+                <td>{{ tc.win_rate }}%</td>
+                <td>{{ "%.0f"|format(tc.avg_accuracy) if tc.avg_accuracy else '?' }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:var(--text-dim);">No time control data.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Opening Performance -->
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Best Openings</h2>
+        <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:8px;">Highest scoring (min 2 games)</p>
+        {% if data.best_openings %}
+        <table>
+            <thead><tr><th>Opening</th><th>Games</th><th>Score</th><th>Accuracy</th></tr></thead>
+            <tbody>
+            {% for o in data.best_openings %}
+            <tr>
+                <td>
+                    <span style="font-weight:600;">{{ o.eco }}</span>
+                    <span style="color:var(--text-dim); font-size:0.85em;">{{ o.opening }}</span>
+                </td>
+                <td>{{ o.games }}</td>
+                <td style="color:var(--green);">{{ o.score }}%</td>
+                <td>{{ o.avg_accuracy }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:var(--text-dim);">Need more games per opening.</p>
+        {% endif %}
+    </div>
+    <div class="card">
+        <h2>Worst Openings</h2>
+        <p style="color:var(--text-dim); font-size:0.85em; margin-bottom:8px;">Lowest scoring (min 2 games)</p>
+        {% if data.worst_openings %}
+        <table>
+            <thead><tr><th>Opening</th><th>Games</th><th>Score</th><th>Accuracy</th></tr></thead>
+            <tbody>
+            {% for o in data.worst_openings %}
+            <tr>
+                <td>
+                    <span style="font-weight:600;">{{ o.eco }}</span>
+                    <span style="color:var(--text-dim); font-size:0.85em;">{{ o.opening }}</span>
+                </td>
+                <td>{{ o.games }}</td>
+                <td style="color:var(--red);">{{ o.score }}%</td>
+                <td>{{ o.avg_accuracy }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:var(--text-dim);">Need more games per opening.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- All Openings -->
+{% if data.all_openings %}
+<div class="card">
+    <h2>Full Opening Repertoire</h2>
+    <table>
+        <thead><tr><th>ECO</th><th>Opening</th><th>Games</th><th>W</th><th>D</th><th>L</th><th>Score</th><th>Accuracy</th></tr></thead>
+        <tbody>
+        {% for o in data.all_openings %}
+        <tr>
+            <td style="font-weight:600;">{{ o.eco }}</td>
+            <td>{{ o.opening }}</td>
+            <td>{{ o.games }}</td>
+            <td style="color:var(--green);">{{ o.wins }}</td>
+            <td>{{ o.draws }}</td>
+            <td style="color:var(--red);">{{ o.losses }}</td>
+            <td>{{ o.score }}%</td>
+            <td>{{ o.avg_accuracy }}%</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if data and data.accuracy_trend %}
+<script>
+(function() {
+    const trend = {{ data.accuracy_trend | tojson }};
+    const canvas = document.getElementById('accuracy-canvas');
+    if (!canvas || trend.length === 0) return;
+
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.offsetWidth * 2;
+    const H = canvas.height = canvas.offsetHeight * 2;
+
+    // Background
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, W, H);
+
+    // Reference lines
+    ctx.strokeStyle = '#2a3a5e';
+    ctx.lineWidth = 1;
+    for (const pct of [25, 50, 75]) {
+        const y = H - (pct / 100) * H;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+
+        ctx.fillStyle = '#4a5a7e';
+        ctx.font = '18px sans-serif';
+        ctx.fillText(pct + '%', 4, y - 4);
+    }
+
+    const stepX = W / Math.max(trend.length - 1, 1);
+
+    // Moving average (5-game)
+    const windowSize = Math.min(5, trend.length);
+    const ma = [];
+    for (let i = 0; i < trend.length; i++) {
+        let sum = 0, count = 0;
+        for (let j = Math.max(0, i - windowSize + 1); j <= i; j++) {
+            sum += trend[j].accuracy;
+            count++;
+        }
+        ma.push(sum / count);
+    }
+
+    // Draw moving average area
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for (let i = 0; i < ma.length; i++) {
+        const x = i * stepX;
+        const y = H - (ma[i] / 100) * H;
+        ctx.lineTo(x, y);
+    }
+    ctx.lineTo((ma.length - 1) * stepX, H);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, 'rgba(76, 175, 80, 0.3)');
+    grad.addColorStop(1, 'rgba(76, 175, 80, 0.02)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Draw individual points
+    for (let i = 0; i < trend.length; i++) {
+        const x = i * stepX;
+        const y = H - (trend[i].accuracy / 100) * H;
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        const won = (trend[i].result === '1-0' && trend[i].color === 'white') ||
+                    (trend[i].result === '0-1' && trend[i].color === 'black');
+        ctx.fillStyle = won ? '#4caf50' : (trend[i].result === '1/2-1/2' ? '#ff9800' : '#f44336');
+        ctx.fill();
+    }
+
+    // Draw moving average line
+    ctx.beginPath();
+    for (let i = 0; i < ma.length; i++) {
+        const x = i * stepX;
+        const y = H - (ma[i] / 100) * H;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    window.addEventListener('resize', () => {
+        const W2 = canvas.width = canvas.offsetWidth * 2;
+        // Simplified redraw on resize
+        location.reload();
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}
