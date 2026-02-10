@@ -8,7 +8,18 @@ const PIECE_FILES = {
 };
 
 const PIECES_PATH = '/static/pieces/';
+const ICONS_PATH = '/static/icons/';
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+const CLASSIFICATION_ICONS = {
+    'best': 'best',
+    'excellent': 'excellent',
+    'good': 'good',
+    'inaccuracy': 'inaccuracy',
+    'mistake': 'mistake',
+    'blunder': 'blunder',
+    'book': 'book',
+};
 
 class ChessBoard {
     constructor(boardEl, options = {}) {
@@ -16,6 +27,7 @@ class ChessBoard {
         this.flipped = options.flipped || false;
         this.position = this.fenToBoard(START_FEN);
         this.lastMove = null;
+        this.classification = null;
         this.render();
     }
 
@@ -41,8 +53,9 @@ class ChessBoard {
         this.render();
     }
 
-    setHighlight(fromSq, toSq) {
+    setHighlight(fromSq, toSq, classification) {
         this.lastMove = { from: fromSq, to: toSq };
+        this.classification = classification || null;
         this.render();
     }
 
@@ -87,6 +100,17 @@ class ChessBoard {
                     img.draggable = false;
                     sq.appendChild(img);
                 }
+
+                // Classification icon on destination square
+                if (this.lastMove && sqName === this.lastMove.to &&
+                    this.classification && CLASSIFICATION_ICONS[this.classification]) {
+                    const icon = document.createElement('img');
+                    icon.src = ICONS_PATH + CLASSIFICATION_ICONS[this.classification] + '.svg';
+                    icon.className = 'classification-icon';
+                    icon.draggable = false;
+                    sq.appendChild(icon);
+                }
+
                 grid.appendChild(sq);
             }
         }
@@ -276,7 +300,9 @@ class GameNavigator {
         if (uci) {
             const from = uci.substring(0, 2);
             const to = uci.substring(2, 4);
-            this.board.setHighlight(from, to);
+            const classification = (ply > 0 && this.moveData[ply - 1])
+                ? this.moveData[ply - 1].classification : null;
+            this.board.setHighlight(from, to, classification);
         }
 
         // Update move table highlight
