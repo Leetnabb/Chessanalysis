@@ -99,6 +99,8 @@ def main(argv: list[str] | None = None):
                          help="Which tier to analyze (default: all)")
     p_smart.add_argument("--reanalyze", action="store_true",
                          help="Re-analyze already analyzed games at higher depth")
+    p_smart.add_argument("--time-limit", type=float, default=0,
+                         help="Override time limit per position in seconds (0=use tier defaults)")
 
     # ── report ───────────────────────────────────────────────────────
     p_report = subparsers.add_parser("report", help="Show learning report from analyzed games")
@@ -594,10 +596,16 @@ def cmd_smart_analyze(db: ChessDatabase, args):
 
     tiers = {"recent": [], "older": [], "ancient": []}
     tier_depths = {"recent": 18, "older": 14, "ancient": 10}
+    # Time limit per position (seconds) - prevents positions from taking minutes
+    user_tl = getattr(args, 'time_limit', 0)
+    if user_tl > 0:
+        tier_time_limits = {"recent": user_tl, "older": user_tl, "ancient": user_tl}
+    else:
+        tier_time_limits = {"recent": 1.5, "older": 1.0, "ancient": 0.5}
     tier_labels = {
-        "recent": "Recent (last 2 years) - depth 18",
-        "older": "Older (2-5 years) - depth 14",
-        "ancient": "Ancient (5+ years) - depth 10",
+        "recent": "Recent (last 2 years) - depth 18, 1.5s/pos",
+        "older": "Older (2-5 years) - depth 14, 1.0s/pos",
+        "ancient": "Ancient (5+ years) - depth 10, 0.5s/pos",
     }
 
     for g in all_games:
@@ -663,9 +671,12 @@ def cmd_smart_analyze(db: ChessDatabase, args):
             print()
             continue
 
-        # Estimate time
+        # Estimate time based on time limit per position
+        pos_time = tier_time_limits[tier_name]
         avg_plies = sum(g.get("total_plies", 60) for g in to_analyze) / max(len(to_analyze), 1)
-        time_per_game = avg_plies * target_depth * 0.05  # rough estimate in seconds
+        # 2 analyses per non-book ply, ~10 book plies are fast
+        effective_plies = max(avg_plies - 10, 20)
+        time_per_game = effective_plies * 2 * pos_time
         total_est = time_per_game * need_analysis
         if total_est < 3600:
             est_str = f"~{total_est / 60:.0f} minutes"
@@ -714,7 +725,10 @@ def cmd_smart_analyze(db: ChessDatabase, args):
                     )
 
                     try:
-                        results = analyzer.analyze_game(g["moves"], depth=target_depth)
+                        results = analyzer.analyze_game(
+                            g["moves"], depth=target_depth,
+                            time_limit=tier_time_limits[tier_name],
+                        )
                         db.save_analysis(gid, target_depth, results)
 
                         summary = db.get_analysis_summary(gid)

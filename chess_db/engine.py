@@ -100,6 +100,7 @@ class StockfishAnalyzer:
         moves_text: str,
         depth: int = 18,
         move_range: tuple[int, int] | None = None,
+        time_limit: float | None = None,
     ) -> list[dict]:
         """Analyze a game given its move text (SAN).
 
@@ -107,6 +108,7 @@ class StockfishAnalyzer:
             moves_text: PGN move text (e.g. "1. e4 e5 2. Nf3 Nc6 ...")
             depth: analysis depth per move
             move_range: optional (start_ply, end_ply) to analyze a subset (1-indexed)
+            time_limit: optional seconds per position (engine stops at depth OR time)
 
         Returns a list of dicts per ply with:
           - ply: half-move number (1-indexed)
@@ -152,7 +154,7 @@ class StockfishAnalyzer:
                 board.push(move)
                 # Update prev_score for continuity if close to range
                 if ply == start_ply - 1:
-                    info = _analyse_single(engine, board, depth)
+                    info = _analyse_single(engine, board, depth, time_limit)
                     score = info["score"].white()
                     prev_score_cp = score.score() if score.score() is not None else 0
                 continue
@@ -168,9 +170,9 @@ class StockfishAnalyzer:
             move_uci = move.uci()
 
             if move_is_book:
-                # Book move: skip engine analysis, use lightweight eval
+                # Book move: skip deep analysis, use quick eval (depth 8, 0.1s max)
                 board.push(move)
-                post_info = _analyse_single(engine, board, depth)
+                post_info = _analyse_single(engine, board, min(depth, 8), time_limit=0.1)
                 post_score = post_info["score"].white()
                 score_cp = post_score.score()
                 score_mate = post_score.mate()
@@ -198,7 +200,7 @@ class StockfishAnalyzer:
                 continue
 
             # Get best move BEFORE playing the move
-            pre_info = _analyse_single(engine, board, depth)
+            pre_info = _analyse_single(engine, board, depth, time_limit)
             pre_score = pre_info["score"].white()
             best_pv = pre_info.get("pv", [])
             best_move = best_pv[0] if best_pv else None
@@ -212,7 +214,7 @@ class StockfishAnalyzer:
             board.push(move)
 
             # Evaluate position AFTER the move
-            post_info = _analyse_single(engine, board, depth)
+            post_info = _analyse_single(engine, board, depth, time_limit)
             post_score = post_info["score"].white()
             score_cp = post_score.score()
             score_mate = post_score.mate()
@@ -280,9 +282,18 @@ def _extract_clocks(pgn_game) -> dict[int, float]:
     return clocks
 
 
-def _analyse_single(engine, board, depth):
-    """Run engine.analyse and always return a single info dict."""
-    result = engine.analyse(board, chess.engine.Limit(depth=depth))
+def _analyse_single(engine, board, depth, time_limit=None):
+    """Run engine.analyse and always return a single info dict.
+
+    Args:
+        engine: chess.engine.SimpleEngine instance
+        board: chess.Board position to analyze
+        depth: maximum search depth
+        time_limit: optional time limit in seconds per position
+            If set, engine stops when EITHER depth or time is reached.
+    """
+    limit = chess.engine.Limit(depth=depth, time=time_limit)
+    result = engine.analyse(board, limit)
     if isinstance(result, list):
         return result[0]
     return result
