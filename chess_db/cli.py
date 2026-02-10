@@ -89,6 +89,17 @@ def main(argv: list[str] | None = None):
     p_batch.add_argument("--depth", type=int, default=14, help="Search depth (default: 14)")
     p_batch.add_argument("--stockfish", help="Path to Stockfish binary")
 
+    # ── smart-analyze ──────────────────────────────────────────────
+    p_smart = subparsers.add_parser("smart-analyze", help="Smart large-scale analysis with priority tiers")
+    p_smart.add_argument("player", help="Player name to analyze")
+    p_smart.add_argument("--threads", type=int, default=0, help="Stockfish threads (0=auto)")
+    p_smart.add_argument("--hash", type=int, default=256, help="Stockfish hash MB (default: 256)")
+    p_smart.add_argument("--stockfish", help="Path to Stockfish binary")
+    p_smart.add_argument("--tier", choices=["recent", "older", "all"], default="all",
+                         help="Which tier to analyze (default: all)")
+    p_smart.add_argument("--reanalyze", action="store_true",
+                         help="Re-analyze already analyzed games at higher depth")
+
     # ── report ───────────────────────────────────────────────────────
     p_report = subparsers.add_parser("report", help="Show learning report from analyzed games")
     p_report.add_argument("player", help="Player name")
@@ -135,6 +146,8 @@ def main(argv: list[str] | None = None):
             cmd_eval(args)
         elif args.command == "batch-analyze":
             cmd_batch_analyze(db, args)
+        elif args.command == "smart-analyze":
+            cmd_smart_analyze(db, args)
         elif args.command == "report":
             cmd_report(db, args)
         elif args.command == "blunders":
@@ -548,6 +561,184 @@ def cmd_blunders(db: ChessDatabase, args):
         )
 
     print(f"\nUse 'analyze <game-id>' to see the full game analysis.")
+
+
+def cmd_smart_analyze(db: ChessDatabase, args):
+    """Smart large-scale analysis with priority tiers and optimized settings.
+
+    Tiers:
+      - Recent (last 2 years): depth 18, full tactical detection
+      - Older (2-5 years): depth 14
+      - Ancient (5+ years): depth 10
+    """
+    import os
+    import time
+
+    player = args.player
+
+    # Auto-detect threads
+    threads = args.threads
+    if threads <= 0:
+        threads = max(1, os.cpu_count() - 1) if os.cpu_count() else 1
+    hash_mb = args.hash
+
+    # Get all games for this player
+    all_games = db.search(player=player, limit=100000)
+    if not all_games:
+        print(f"No games found for '{player}'.")
+        return
+
+    # Split into tiers by date
+    from datetime import datetime
+    now = datetime.now()
+
+    tiers = {"recent": [], "older": [], "ancient": []}
+    tier_depths = {"recent": 18, "older": 14, "ancient": 10}
+    tier_labels = {
+        "recent": "Recent (last 2 years) - depth 18",
+        "older": "Older (2-5 years) - depth 14",
+        "ancient": "Ancient (5+ years) - depth 10",
+    }
+
+    for g in all_games:
+        gid = g["id"]
+        date_str = g.get("date", "")
+
+        # Parse year from date (format: YYYY.MM.DD)
+        try:
+            year = int(date_str[:4])
+        except (ValueError, TypeError):
+            year = 2000  # Unknown date -> ancient
+
+        age = now.year - year
+
+        if age <= 2:
+            tiers["recent"].append(g)
+        elif age <= 5:
+            tiers["older"].append(g)
+        else:
+            tiers["ancient"].append(g)
+
+    # Determine which games need analysis
+    analyzed_ids = set()
+    analyzed_depths = {}
+    for tier_name, games in tiers.items():
+        for g in games:
+            summary = db.get_analysis_summary(g["id"])
+            if summary:
+                analyzed_ids.add(g["id"])
+                analyzed_depths[g["id"]] = summary["depth"]
+
+    print(f"=== Smart Analysis for {player} ===")
+    print(f"  Total games: {len(all_games)}")
+    print(f"  Already analyzed: {len(analyzed_ids)}")
+    print(f"  Stockfish threads: {threads}, hash: {hash_mb}MB")
+    print()
+
+    for tier_name in ("recent", "older", "ancient"):
+        games = tiers[tier_name]
+        target_depth = tier_depths[tier_name]
+
+        if args.tier != "all" and args.tier != tier_name:
+            continue
+
+        # Filter: unanalyzed, or reanalyze if current depth < target
+        to_analyze = []
+        for g in games:
+            gid = g["id"]
+            if gid not in analyzed_ids:
+                to_analyze.append(g)
+            elif args.reanalyze and analyzed_depths.get(gid, 0) < target_depth:
+                to_analyze.append(g)
+
+        total_in_tier = len(games)
+        need_analysis = len(to_analyze)
+        already = total_in_tier - need_analysis
+
+        print(f"--- {tier_labels[tier_name]} ---")
+        print(f"  {total_in_tier} games, {already} done, {need_analysis} remaining")
+
+        if need_analysis == 0:
+            print("  All done!")
+            print()
+            continue
+
+        # Estimate time
+        avg_plies = sum(g.get("total_plies", 60) for g in to_analyze) / max(len(to_analyze), 1)
+        time_per_game = avg_plies * target_depth * 0.05  # rough estimate in seconds
+        total_est = time_per_game * need_analysis
+        if total_est < 3600:
+            est_str = f"~{total_est / 60:.0f} minutes"
+        elif total_est < 86400:
+            est_str = f"~{total_est / 3600:.1f} hours"
+        else:
+            est_str = f"~{total_est / 86400:.1f} days"
+
+        print(f"  Estimated time: {est_str}")
+        print()
+
+        # Sort: losses first (most to learn), then draws, then wins
+        def sort_key(g):
+            is_white = player.lower() in g["white"].lower()
+            r = g["result"]
+            if (r == "0-1" and is_white) or (r == "1-0" and not is_white):
+                return 0  # losses first
+            elif r == "1/2-1/2":
+                return 1
+            else:
+                return 2
+        to_analyze.sort(key=sort_key)
+
+        try:
+            with StockfishAnalyzer(
+                stockfish_path=args.stockfish,
+                threads=threads,
+                hash_mb=hash_mb,
+            ) as analyzer:
+                start_time = time.time()
+                for i, g in enumerate(to_analyze, 1):
+                    gid = g["id"]
+                    if not g["moves"].strip():
+                        continue
+
+                    white = g["white"][:15]
+                    black = g["black"][:15]
+                    elapsed = time.time() - start_time
+                    rate = i / max(elapsed, 1) * 3600
+                    eta = (need_analysis - i) / max(rate / 3600, 0.001)
+
+                    print(
+                        f"  [{i}/{need_analysis}] #{gid} {white} vs {black} "
+                        f"({g['date']}) ",
+                        end="", flush=True,
+                    )
+
+                    try:
+                        results = analyzer.analyze_game(g["moves"], depth=target_depth)
+                        db.save_analysis(gid, target_depth, results)
+
+                        summary = db.get_analysis_summary(gid)
+                        is_white = player.lower() in g["white"].lower()
+                        acc = summary["white_accuracy"] if is_white else summary["black_accuracy"]
+                        acc_str = f"{acc:.0f}%" if acc is not None else "?"
+                        print(f"  {acc_str}  [{rate:.0f}/hr, ETA {eta:.1f}h]")
+
+                    except KeyboardInterrupt:
+                        print("\n\n  Stopped by user. Progress saved - run again to continue.")
+                        return
+                    except Exception as e:
+                        print(f"  ERROR: {e}")
+
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return
+
+        print()
+
+    total_analyzed = db.analyzed_count()
+    total_games = db.count()
+    print(f"Done. {total_analyzed}/{total_games} games analyzed total.")
+    print(f"View insights at: http://localhost:8080/insights/{player}")
 
 
 if __name__ == "__main__":
