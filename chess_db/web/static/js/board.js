@@ -1,13 +1,13 @@
 /**
- * Minimal chess board renderer and game navigator.
- * Uses Unicode pieces - no external dependencies.
+ * Chess board renderer with SVG pieces.
  */
 
-const PIECES = {
-    'K': '\u2654', 'Q': '\u2655', 'R': '\u2656', 'B': '\u2657', 'N': '\u2658', 'P': '\u2659',
-    'k': '\u265A', 'q': '\u265B', 'r': '\u265C', 'b': '\u265D', 'n': '\u265E', 'p': '\u265F',
+const PIECE_FILES = {
+    'K': 'wK', 'Q': 'wQ', 'R': 'wR', 'B': 'wB', 'N': 'wN', 'P': 'wP',
+    'k': 'bK', 'q': 'bQ', 'r': 'bR', 'b': 'bB', 'n': 'bN', 'p': 'bP',
 };
 
+const PIECES_PATH = '/static/pieces/';
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 class ChessBoard {
@@ -48,20 +48,6 @@ class ChessBoard {
 
     render() {
         this.el.innerHTML = '';
-        const wrapper = document.createElement('div');
-        wrapper.className = 'board-wrapper';
-
-        // Rank labels
-        const rankLabels = document.createElement('div');
-        rankLabels.className = 'rank-labels';
-        for (let r = 0; r < 8; r++) {
-            const label = document.createElement('div');
-            label.textContent = this.flipped ? (r + 1) : (8 - r);
-            rankLabels.appendChild(label);
-        }
-        wrapper.appendChild(rankLabels);
-
-        const boardDiv = document.createElement('div');
         const grid = document.createElement('div');
         grid.className = 'chess-board';
 
@@ -73,35 +59,38 @@ class ChessBoard {
                 const isLight = (dispR + dispF) % 2 === 0;
                 sq.className = 'sq ' + (isLight ? 'sq-light' : 'sq-dark');
 
-                // Highlight last move
                 const sqName = String.fromCharCode(97 + dispF) + (8 - dispR);
                 if (this.lastMove &&
                     (sqName === this.lastMove.from || sqName === this.lastMove.to)) {
                     sq.classList.add('sq-highlight');
                 }
 
+                // Coordinate labels on the edges
+                if (f === 0) {
+                    const rankLabel = document.createElement('span');
+                    rankLabel.className = 'coord coord-rank';
+                    rankLabel.textContent = 8 - dispR;
+                    sq.appendChild(rankLabel);
+                }
+                if (r === 7) {
+                    const fileLabel = document.createElement('span');
+                    fileLabel.className = 'coord coord-file';
+                    fileLabel.textContent = String.fromCharCode(97 + dispF);
+                    sq.appendChild(fileLabel);
+                }
+
                 const piece = this.position[dispR][dispF];
-                if (piece) {
-                    sq.textContent = PIECES[piece] || piece;
+                if (piece && PIECE_FILES[piece]) {
+                    const img = document.createElement('img');
+                    img.src = PIECES_PATH + PIECE_FILES[piece] + '.svg';
+                    img.className = 'piece-img';
+                    img.draggable = false;
+                    sq.appendChild(img);
                 }
                 grid.appendChild(sq);
             }
         }
-        boardDiv.appendChild(grid);
-
-        // File labels
-        const fileLabels = document.createElement('div');
-        fileLabels.className = 'file-labels';
-        for (let f = 0; f < 8; f++) {
-            const label = document.createElement('div');
-            const dispF = this.flipped ? 7 - f : f;
-            label.textContent = String.fromCharCode(97 + dispF);
-            fileLabels.appendChild(label);
-        }
-        boardDiv.appendChild(fileLabels);
-
-        wrapper.appendChild(boardDiv);
-        this.el.appendChild(wrapper);
+        this.el.appendChild(grid);
     }
 }
 
