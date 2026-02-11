@@ -8,6 +8,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for
 
 from ..database import ChessDatabase
 from ..engine import StockfishAnalyzer, format_score, format_eval_bar
+from ..puzzles import generate_puzzles
 
 DEFAULT_DB = os.environ.get("CHESS_DB", "chess_games.db")
 
@@ -203,6 +204,28 @@ def create_app(db_path: str = DEFAULT_DB) -> Flask:
         if player:
             return redirect(url_for("report", player=player))
         return redirect(url_for("index"))
+
+    # ── Training / Puzzles ────────────────────────────────────────
+
+    @app.route("/train/<player>")
+    def train(player: str):
+        category = request.args.get("type", "all")
+        categories = None if category == "all" else [category]
+        with get_db() as db:
+            puzzles = generate_puzzles(db, player, categories=categories, limit=200)
+            stats = db.player_stats(player)
+        # Count by category
+        counts = {"tactical": 0, "positional": 0, "opening": 0}
+        for p in puzzles:
+            counts[p["category"]] = counts.get(p["category"], 0) + 1
+        return render_template(
+            "train.html",
+            player=player,
+            puzzles=puzzles,
+            category=category,
+            counts=counts,
+            stats=stats,
+        )
 
     # ── API: game move data (for AJAX) ────────────────────────────
 

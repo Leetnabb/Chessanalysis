@@ -1,0 +1,574 @@
+{% extends "base.html" %}
+{% block title %}Trening - {{ player }} - Chess Analysis{% endblock %}
+
+{% block content %}
+<h1>Trening: {{ player }}</h1>
+
+<!-- Category filter tabs -->
+<div class="card" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; padding:12px 20px;">
+    <a href="{{ url_for('train', player=player, type='all') }}"
+       class="btn btn-sm {% if category == 'all' %}{% else %}btn-secondary{% endif %}">
+        Alle ({{ puzzles|length }})
+    </a>
+    <a href="{{ url_for('train', player=player, type='tactical') }}"
+       class="btn btn-sm {% if category == 'tactical' %}{% else %}btn-secondary{% endif %}">
+        Taktisk ({{ counts.tactical }})
+    </a>
+    <a href="{{ url_for('train', player=player, type='positional') }}"
+       class="btn btn-sm {% if category == 'positional' %}{% else %}btn-secondary{% endif %}">
+        Posisjonell ({{ counts.positional }})
+    </a>
+    <a href="{{ url_for('train', player=player, type='opening') }}"
+       class="btn btn-sm {% if category == 'opening' %}{% else %}btn-secondary{% endif %}">
+        Åpning ({{ counts.opening }})
+    </a>
+    <span style="margin-left:auto; color:var(--text-dim); font-size:0.85em;">
+        <a href="{{ url_for('insights', player=player) }}">Insights</a>
+    </span>
+</div>
+
+{% if not puzzles %}
+<div class="card" style="text-align:center; padding:40px;">
+    <p style="font-size:1.2em; color:var(--text-dim);">Ingen oppgaver tilgjengelig.</p>
+    <p style="color:var(--text-dim); margin-top:10px;">
+        Analyser flere partier for å generere treningsoppgaver.
+    </p>
+</div>
+{% else %}
+
+<!-- Progress bar -->
+<div class="card" style="padding:12px 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span id="progress-text" style="font-weight:600;">Oppgave 1 / {{ puzzles|length }}</span>
+        <span id="score-text" style="color:var(--text-dim);">0 riktige av 0</span>
+    </div>
+    <div style="background:#333; border-radius:4px; height:6px; overflow:hidden;">
+        <div id="progress-bar" style="height:100%; background:var(--green); width:0%; transition:width 0.3s;"></div>
+    </div>
+</div>
+
+<!-- Main puzzle layout -->
+<div class="puzzle-layout">
+    <!-- Board -->
+    <div>
+        <div id="puzzle-board" class="puzzle-board-container"></div>
+        <div class="board-controls" style="margin-top:10px;">
+            <button class="btn btn-sm btn-secondary" id="btn-hint" title="Hint">Hint</button>
+            <button class="btn btn-sm btn-secondary" id="btn-solution">Vis løsning</button>
+            <button class="btn btn-sm" id="btn-next" disabled>Neste</button>
+        </div>
+    </div>
+
+    <!-- Info panel -->
+    <div class="puzzle-info">
+        <!-- Feedback area -->
+        <div id="feedback" class="puzzle-feedback" style="display:none;"></div>
+
+        <!-- Prompt -->
+        <div class="card" id="puzzle-prompt" style="padding:16px;">
+            <div style="font-size:1.2em; font-weight:700; margin-bottom:10px;" id="prompt-text">
+                Finn det beste trekket!
+            </div>
+            <div id="puzzle-meta" style="font-size:0.85em; color:var(--text-dim);"></div>
+        </div>
+
+        <!-- Puzzle details (shown after solving) -->
+        <div class="card" id="puzzle-details" style="padding:16px; display:none;">
+            <h3 style="font-size:1em; margin-bottom:8px;">Detaljer</h3>
+            <div id="detail-content"></div>
+        </div>
+
+        <!-- Session stats -->
+        <div class="card" style="padding:16px;">
+            <h3 style="font-size:1em; margin-bottom:8px;">Statistikk</h3>
+            <div class="grid grid-3" style="gap:8px; text-align:center;">
+                <div>
+                    <div id="stat-correct" style="font-size:1.5em; font-weight:700; color:var(--green);">0</div>
+                    <div style="font-size:0.8em; color:var(--text-dim);">Riktige</div>
+                </div>
+                <div>
+                    <div id="stat-wrong" style="font-size:1.5em; font-weight:700; color:var(--red);">0</div>
+                    <div style="font-size:0.8em; color:var(--text-dim);">Feil</div>
+                </div>
+                <div>
+                    <div id="stat-pct" style="font-size:1.5em; font-weight:700; color:var(--accent);">-</div>
+                    <div style="font-size:0.8em; color:var(--text-dim);">Prosent</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/board.js') }}"></script>
+{% if puzzles %}
+<script>
+const PUZZLES = {{ puzzles | tojson }};
+const TACTIC_LABELS = {
+    "fork": "Gaffel",
+    "pin": "Binding",
+    "skewer": "Spyd",
+    "discovered_attack": "Avdekker",
+    "back_rank": "Bakrekke",
+    "hanging_piece": "Hengende brikke",
+    "removing_defender": "Fjerne forsvarer",
+    "promotion": "Bondeforvandling",
+    "trapped_piece": "Fanget brikke",
+    "isolated_pawns": "Isolerte bønder",
+    "doubled_pawns": "Doble bønder",
+    "weak_back_rank": "Svak bakrekke",
+    "king_exposed": "Utsatt konge",
+};
+const CATEGORY_LABELS = {
+    "tactical": "Taktisk",
+    "positional": "Posisjonell",
+    "opening": "Åpning",
+};
+const CLASS_LABELS = {
+    "blunder": "Bukk",
+    "mistake": "Feil",
+    "inaccuracy": "Unøyaktighet",
+};
+
+class PuzzleTrainer {
+    constructor(boardEl, puzzles) {
+        this.boardEl = boardEl;
+        this.puzzles = puzzles;
+        this.currentIndex = 0;
+        this.board = null;
+        this.selectedSquare = null;
+        this.currentSolved = false;
+        this.showedSolution = false;
+        this.correct = 0;
+        this.wrong = 0;
+        this.attempted = 0;
+
+        this.setupButtons();
+        this.loadPuzzle(0);
+    }
+
+    setupButtons() {
+        document.getElementById('btn-hint').addEventListener('click', () => this.showHint());
+        document.getElementById('btn-solution').addEventListener('click', () => this.showSolution());
+        document.getElementById('btn-next').addEventListener('click', () => this.nextPuzzle());
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === 'Enter') {
+                if (this.currentSolved) this.nextPuzzle();
+            }
+        });
+    }
+
+    loadPuzzle(index) {
+        if (index >= this.puzzles.length) {
+            this.showComplete();
+            return;
+        }
+
+        this.currentIndex = index;
+        this.currentSolved = false;
+        this.showedSolution = false;
+        this.selectedSquare = null;
+
+        const puzzle = this.puzzles[index];
+
+        // Determine board orientation (player's color at bottom)
+        const fen = puzzle.fen;
+        const turn = fen.split(' ')[1]; // 'w' or 'b'
+        const flipped = turn === 'b'; // If black to move, flip board
+
+        // Create new board with correct orientation
+        this.board = new ChessBoard(this.boardEl, { flipped: flipped });
+        this.board.setPosition(fen);
+
+        // Add click handlers to squares
+        this.attachClickHandlers();
+
+        // Update UI
+        this.updateProgress();
+        this.updateMeta(puzzle);
+
+        // Reset feedback
+        document.getElementById('feedback').style.display = 'none';
+        document.getElementById('puzzle-details').style.display = 'none';
+        document.getElementById('prompt-text').textContent = 'Finn det beste trekket!';
+        document.getElementById('btn-next').disabled = true;
+        document.getElementById('btn-hint').disabled = false;
+        document.getElementById('btn-solution').disabled = false;
+    }
+
+    attachClickHandlers() {
+        // Use event delegation on the board container
+        this.boardEl.onclick = (e) => {
+            if (this.currentSolved) return;
+
+            const sq = e.target.closest('.sq');
+            if (!sq) return;
+
+            const sqName = this.getSquareName(sq);
+            if (!sqName) return;
+
+            if (this.selectedSquare) {
+                if (sqName === this.selectedSquare) {
+                    // Deselect
+                    this.selectedSquare = null;
+                    this.clearSelection();
+                    return;
+                }
+                // Try making a move
+                this.tryMove(this.selectedSquare, sqName);
+                this.selectedSquare = null;
+            } else {
+                // Select a piece
+                const piece = this.getPieceAt(sqName);
+                if (piece && this.isPlayerPiece(piece)) {
+                    this.selectedSquare = sqName;
+                    this.highlightSelection(sqName);
+                }
+            }
+        };
+    }
+
+    getSquareName(sqEl) {
+        const grid = this.boardEl.querySelector('.chess-board');
+        if (!grid) return null;
+        const squares = [...grid.children];
+        const idx = squares.indexOf(sqEl);
+        if (idx < 0) return null;
+
+        const r = Math.floor(idx / 8);
+        const f = idx % 8;
+        const dispR = this.board.flipped ? 7 - r : r;
+        const dispF = this.board.flipped ? 7 - f : f;
+        return String.fromCharCode(97 + dispF) + (8 - dispR);
+    }
+
+    getPieceAt(sqName) {
+        const file = sqName.charCodeAt(0) - 97;
+        const rank = 8 - parseInt(sqName[1]);
+        return this.board.position[rank][file];
+    }
+
+    isPlayerPiece(piece) {
+        const fen = this.puzzles[this.currentIndex].fen;
+        const turn = fen.split(' ')[1];
+        if (turn === 'w') return piece >= 'A' && piece <= 'Z';
+        return piece >= 'a' && piece <= 'z';
+    }
+
+    highlightSelection(sqName) {
+        const grid = this.boardEl.querySelector('.chess-board');
+        if (!grid) return;
+        // Clear old selections
+        grid.querySelectorAll('.sq-selected').forEach(s => s.classList.remove('sq-selected'));
+        // Find and highlight the selected square
+        const squares = [...grid.children];
+        for (let i = 0; i < squares.length; i++) {
+            const r = Math.floor(i / 8);
+            const f = i % 8;
+            const dispR = this.board.flipped ? 7 - r : r;
+            const dispF = this.board.flipped ? 7 - f : f;
+            const name = String.fromCharCode(97 + dispF) + (8 - dispR);
+            if (name === sqName) {
+                squares[i].classList.add('sq-selected');
+                break;
+            }
+        }
+    }
+
+    clearSelection() {
+        const grid = this.boardEl.querySelector('.chess-board');
+        if (grid) grid.querySelectorAll('.sq-selected').forEach(s => s.classList.remove('sq-selected'));
+    }
+
+    tryMove(from, to) {
+        let uci = from + to;
+
+        // Check for pawn promotion
+        const piece = this.getPieceAt(from);
+        const toRank = parseInt(to[1]);
+        if (piece && (piece === 'P' && toRank === 8 || piece === 'p' && toRank === 1)) {
+            // Check if correct move is a promotion with specific piece
+            const correct = this.puzzles[this.currentIndex].correct_move_uci;
+            if (correct.length === 5 && correct.substring(0, 4) === uci) {
+                uci = correct; // Use exact promotion from solution
+            } else {
+                uci += 'q'; // Default to queen
+            }
+        }
+
+        const puzzle = this.puzzles[this.currentIndex];
+        if (uci === puzzle.correct_move_uci) {
+            this.handleCorrect(puzzle);
+        } else {
+            this.handleIncorrect(from, to);
+        }
+    }
+
+    handleCorrect(puzzle) {
+        this.currentSolved = true;
+        if (!this.showedSolution) {
+            this.correct++;
+        }
+        this.attempted++;
+
+        // Show correct move on board
+        const uci = puzzle.correct_move_uci;
+        const from = uci.substring(0, 2);
+        const to = uci.substring(2, 4);
+
+        // Apply move to position
+        this.applyMoveToBoard(uci);
+        this.board.setHighlight(from, to, 'best');
+
+        // Show feedback
+        this.showFeedback(true, puzzle);
+        this.updateStats();
+
+        document.getElementById('btn-next').disabled = false;
+        document.getElementById('btn-hint').disabled = true;
+        document.getElementById('btn-solution').disabled = true;
+    }
+
+    handleIncorrect(from, to) {
+        // Briefly flash the destination square red
+        this.highlightWrong(to);
+
+        if (!this.currentSolved) {
+            this.wrong++;
+            this.attempted++;
+            this.currentSolved = true;
+
+            // Show what was wrong and reveal solution
+            const puzzle = this.puzzles[this.currentIndex];
+            this.showFeedback(false, puzzle);
+            this.updateStats();
+
+            // Show the correct move after a short delay
+            setTimeout(() => {
+                this.revealSolution();
+            }, 800);
+        }
+    }
+
+    highlightWrong(sqName) {
+        const grid = this.boardEl.querySelector('.chess-board');
+        if (!grid) return;
+        const squares = [...grid.children];
+        for (let i = 0; i < squares.length; i++) {
+            const name = this.getSquareNameByIndex(i);
+            if (name === sqName) {
+                squares[i].classList.add('sq-wrong');
+                setTimeout(() => squares[i].classList.remove('sq-wrong'), 600);
+                break;
+            }
+        }
+    }
+
+    getSquareNameByIndex(idx) {
+        const r = Math.floor(idx / 8);
+        const f = idx % 8;
+        const dispR = this.board.flipped ? 7 - r : r;
+        const dispF = this.board.flipped ? 7 - f : f;
+        return String.fromCharCode(97 + dispF) + (8 - dispR);
+    }
+
+    applyMoveToBoard(uci) {
+        const fromF = uci.charCodeAt(0) - 97;
+        const fromR = 8 - parseInt(uci[1]);
+        const toF = uci.charCodeAt(2) - 97;
+        const toR = 8 - parseInt(uci[3]);
+        const promo = uci.length > 4 ? uci[4] : null;
+
+        const piece = this.board.position[fromR][fromF];
+
+        // En passant capture
+        if ((piece === 'P' || piece === 'p') && toF !== fromF && this.board.position[toR][toF] === '') {
+            this.board.position[fromR][toF] = '';
+        }
+
+        this.board.position[toR][toF] = piece;
+        this.board.position[fromR][fromF] = '';
+
+        // Promotion
+        if (promo) {
+            const fen = this.puzzles[this.currentIndex].fen;
+            const turn = fen.split(' ')[1];
+            this.board.position[toR][toF] = turn === 'w'
+                ? promo.toUpperCase()
+                : promo.toLowerCase();
+        }
+
+        // Castling
+        if (piece === 'K' || piece === 'k') {
+            if (fromF === 4 && toF === 6) {
+                this.board.position[fromR][5] = this.board.position[fromR][7];
+                this.board.position[fromR][7] = '';
+            } else if (fromF === 4 && toF === 2) {
+                this.board.position[fromR][3] = this.board.position[fromR][0];
+                this.board.position[fromR][0] = '';
+            }
+        }
+    }
+
+    showHint() {
+        const puzzle = this.puzzles[this.currentIndex];
+        const uci = puzzle.correct_move_uci;
+        const from = uci.substring(0, 2);
+        // Highlight the from-square to hint which piece to move
+        this.highlightSelection(from);
+        document.getElementById('prompt-text').textContent = 'Flytt denne brikken!';
+    }
+
+    showSolution() {
+        this.showedSolution = true;
+        this.revealSolution();
+
+        if (!this.currentSolved) {
+            this.wrong++;
+            this.attempted++;
+            this.currentSolved = true;
+            const puzzle = this.puzzles[this.currentIndex];
+            this.showFeedback(null, puzzle); // null = showed solution
+            this.updateStats();
+        }
+    }
+
+    revealSolution() {
+        const puzzle = this.puzzles[this.currentIndex];
+        const uci = puzzle.correct_move_uci;
+        const from = uci.substring(0, 2);
+        const to = uci.substring(2, 4);
+
+        this.applyMoveToBoard(uci);
+        this.board.setHighlight(from, to, 'best');
+
+        document.getElementById('btn-next').disabled = false;
+        document.getElementById('btn-hint').disabled = true;
+        document.getElementById('btn-solution').disabled = true;
+    }
+
+    showFeedback(isCorrect, puzzle) {
+        const el = document.getElementById('feedback');
+        el.style.display = 'block';
+
+        if (isCorrect === true) {
+            el.className = 'puzzle-feedback feedback-correct';
+            el.innerHTML = '<strong>Riktig!</strong> ' + puzzle.correct_move_san;
+        } else if (isCorrect === false) {
+            el.className = 'puzzle-feedback feedback-wrong';
+            el.innerHTML = '<strong>Feil.</strong> Riktig svar: <strong>' + puzzle.correct_move_san + '</strong>';
+        } else {
+            el.className = 'puzzle-feedback feedback-solution';
+            el.innerHTML = 'Løsning: <strong>' + puzzle.correct_move_san + '</strong>';
+        }
+
+        // Show details
+        this.showDetails(puzzle);
+    }
+
+    showDetails(puzzle) {
+        const el = document.getElementById('puzzle-details');
+        el.style.display = 'block';
+
+        let html = '';
+        html += '<div style="margin-bottom:6px;">';
+        html += '<span class="badge badge-' + puzzle.classification + '">' +
+                (CLASS_LABELS[puzzle.classification] || puzzle.classification) + '</span> ';
+        html += '<span class="badge badge-' + puzzle.category + '">' +
+                (CATEGORY_LABELS[puzzle.category] || puzzle.category) + '</span>';
+        html += '</div>';
+
+        html += '<div style="font-size:0.85em; color:var(--text-dim); line-height:1.6;">';
+        html += 'Du spilte: <strong style="color:var(--red);">' + puzzle.played_move_san + '</strong>';
+        html += ' (tap: ' + puzzle.cp_loss + ' cp)<br>';
+        html += 'Beste trekk: <strong style="color:var(--green);">' + puzzle.correct_move_san + '</strong><br>';
+
+        if (puzzle.tactics && puzzle.tactics.length > 0) {
+            const names = puzzle.tactics.map(t => TACTIC_LABELS[t] || t).join(', ');
+            html += 'Taktikk: <strong>' + names + '</strong><br>';
+        }
+
+        html += '<a href="/game/' + puzzle.game_id + '" style="font-size:0.9em;">';
+        html += 'Se parti vs ' + puzzle.opponent + ' (' + puzzle.date + ')';
+        html += '</a>';
+        html += '</div>';
+
+        document.getElementById('detail-content').innerHTML = html;
+    }
+
+    updateMeta(puzzle) {
+        let html = '';
+        html += '<span class="badge badge-' + puzzle.category + '">' +
+                (CATEGORY_LABELS[puzzle.category] || puzzle.category) + '</span> ';
+
+        const stars = puzzle.difficulty === 1 ? '&#9733;' :
+                      puzzle.difficulty === 2 ? '&#9733;&#9733;' : '&#9733;&#9733;&#9733;';
+        html += '<span style="color:var(--yellow);" title="Vanskelighetsgrad">' + stars + '</span>';
+
+        html += '<div style="margin-top:8px;">';
+        if (puzzle.opening) {
+            html += puzzle.eco + ' ' + puzzle.opening + '<br>';
+        }
+        html += 'vs ' + puzzle.opponent + ' &middot; Trekk ' + puzzle.move_number;
+        html += '</div>';
+
+        document.getElementById('puzzle-meta').innerHTML = html;
+    }
+
+    updateProgress() {
+        const total = this.puzzles.length;
+        const current = this.currentIndex + 1;
+        document.getElementById('progress-text').textContent =
+            'Oppgave ' + current + ' / ' + total;
+        document.getElementById('progress-bar').style.width =
+            ((current - 1) / total * 100) + '%';
+        document.getElementById('score-text').textContent =
+            this.correct + ' riktige av ' + this.attempted;
+    }
+
+    updateStats() {
+        document.getElementById('stat-correct').textContent = this.correct;
+        document.getElementById('stat-wrong').textContent = this.wrong;
+        const pct = this.attempted > 0
+            ? Math.round(this.correct / this.attempted * 100)
+            : 0;
+        document.getElementById('stat-pct').textContent =
+            this.attempted > 0 ? pct + '%' : '-';
+    }
+
+    nextPuzzle() {
+        this.loadPuzzle(this.currentIndex + 1);
+    }
+
+    showComplete() {
+        const pct = this.attempted > 0
+            ? Math.round(this.correct / this.attempted * 100)
+            : 0;
+        this.boardEl.innerHTML = `
+            <div style="width:512px; height:512px; display:flex; flex-direction:column;
+                        align-items:center; justify-content:center; background:var(--bg-card);
+                        border:2px solid var(--border); border-radius:8px;">
+                <div style="font-size:2em; font-weight:700; margin-bottom:10px;">Ferdig!</div>
+                <div style="font-size:1.2em; color:var(--text-dim); margin-bottom:20px;">
+                    ${this.correct} av ${this.attempted} riktige (${pct}%)
+                </div>
+                <a href="${window.location.href}" class="btn">Start på nytt</a>
+            </div>
+        `;
+        document.getElementById('progress-bar').style.width = '100%';
+        document.getElementById('progress-text').textContent =
+            'Fullført ' + this.puzzles.length + ' oppgaver';
+    }
+}
+
+// Initialize
+const trainer = new PuzzleTrainer(
+    document.getElementById('puzzle-board'),
+    PUZZLES
+);
+</script>
+{% endif %}
+{% endblock %}

@@ -310,6 +310,72 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
     filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
 }
 
+/* ── Puzzle trainer ─────────────────────────── */
+
+.puzzle-layout {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 20px;
+    align-items: start;
+}
+@media (max-width: 900px) {
+    .puzzle-layout { grid-template-columns: 1fr; }
+}
+
+.puzzle-board-container {
+    cursor: pointer;
+}
+.puzzle-board-container .sq { cursor: pointer; }
+
+/* Selected piece square */
+.chess-board .sq-selected {
+    background: #7b61ff !important;
+    box-shadow: inset 0 0 0 3px rgba(123, 97, 255, 0.6);
+}
+
+/* Wrong move flash */
+.chess-board .sq-wrong {
+    background: #f44336 !important;
+    animation: flash-wrong 0.6s ease;
+}
+@keyframes flash-wrong {
+    0% { background: #f44336; }
+    100% { background: inherit; }
+}
+
+/* Category badges */
+.badge-tactical { background: #c62828; color: #ffcdd2; }
+.badge-positional { background: #1565c0; color: #bbdefb; }
+.badge-opening { background: #795548; color: #d7ccc8; }
+
+/* Feedback messages */
+.puzzle-feedback {
+    padding: 14px 18px;
+    border-radius: 8px;
+    font-size: 1em;
+    margin-bottom: 15px;
+    font-weight: 500;
+}
+.feedback-correct {
+    background: rgba(76, 175, 80, 0.15);
+    border: 1px solid var(--green);
+    color: #a5d6a7;
+}
+.feedback-wrong {
+    background: rgba(244, 67, 54, 0.15);
+    border: 1px solid var(--red);
+    color: #ffcdd2;
+}
+.feedback-solution {
+    background: rgba(255, 152, 0, 0.15);
+    border: 1px solid var(--yellow);
+    color: #ffe0b2;
+}
+
+.puzzle-info {
+    min-width: 280px;
+}
+
 /* Spinner */
 .spinner {
     display: inline-block;
