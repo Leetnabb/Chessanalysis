@@ -135,6 +135,14 @@ def generate_puzzles(
             else:
                 cp_loss = 0
 
+            # Skip positions that are already lost before the mistake.
+            # These give little training value - the game was already over.
+            # best_score_cp is from white's perspective.
+            if best_cp is not None:
+                player_eval = best_cp if is_white else -best_cp
+                if player_eval < -300:
+                    continue  # Already losing badly, skip
+
             # Difficulty: 1=easy (big blunder), 2=medium, 3=hard (subtle)
             if m["classification"] == "blunder":
                 difficulty = 1
